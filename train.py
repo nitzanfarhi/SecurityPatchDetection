@@ -101,11 +101,10 @@ def add_time_one_hot_encoding(df, with_idx=False):
     return df
 
 
-def get_event_window(cur_repo_data, name, event, aggr_options, days=10, hours=10, backs=50, resample=24):
+def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, backs=50, resample=24):
     starting_time = event[0] - timedelta(days=days, hours=hours)
     res = cur_repo_data[starting_time:event[0]]
 
-    details = (name, event[0])
     if aggr_options == Aggregate.before_cve:
         res = res.iloc[:-1, :]
         res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
@@ -122,7 +121,7 @@ def get_event_window(cur_repo_data, name, event, aggr_options, days=10, hours=10
 
     else:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[event[1] - backs:event[1]]
-    return (res.values, details)
+    return res.values
 
 
 repo_dirs = '../repo_gharchive_processed4'
@@ -157,6 +156,7 @@ class Aggregate(Enum):
 
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     vuln_all, benign_all = [], []
+    vuln_details, benign_details = [], []
     for file in os.listdir(repo_dirs)[:]:
         try:
             selected = 4
@@ -186,18 +186,23 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
         for vuln in tqdm.tqdm(vulns, desc=file + " vuln", leave=False):
-            res, details = get_event_window(cur_repo, file, vuln, aggr_options, days=days, hours=hours, backs=backs,
+            res = get_event_window(cur_repo, vuln, aggr_options, days=days, hours=hours, backs=backs,
                                             resample=resample)
+            tag = 1
+            details = (file,vuln,tag)
             vuln_all.append(res)
-
+            vuln_details.append(details)
         benign_counter = 0
         for benign in tqdm.tqdm(benigns, file + " benign", leave=False):
             if benign_counter >= benign_vuln_ratio * len(vulns):
                 break
 
-            res, details = get_event_window(cur_repo, file, benign, aggr_options, days=days, hours=hours, backs=backs,
+            res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
                                             resample=resample)
             benign_all.append(res)
+            tag = 0
+            details = (file,vuln,tag)
+            benign_details.append(details)
             benign_counter += 1
 
         # print(file, res.shape, to_padA, to_padB)
@@ -219,8 +224,10 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
     np.save("ready_data/" + vuln_npy_name, vuln_all)
     np.save("ready_data/" + benign_npy_name, benign_all)
+    np.save("ready_data/details_" + vuln_npy_name, vuln_details)
+    np.save("ready_data/details_" + benign_npy_name, benign_details)
 
-    return vuln_all, benign_all
+    return vuln_all, benign_all, vuln_details, benign_details
 
 
 def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
@@ -251,15 +258,15 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
         logging.info(f"Loading Dataset {benign_npy_name}")
         vuln_all = np.load("ready_data/" + vuln_npy_name)
         benign_all = np.load("ready_data/" + benign_npy_name)
-        # vuln_details = np.load("ready_data/details_" + vuln_npy_name,allow_pickle=True)
-        # benign_details = np.load("ready_data/details_" + benign_npy_name, allow_pickle=True)
+        vuln_details = np.load("ready_data/details_" + vuln_npy_name,allow_pickle=True)
+        benign_details = np.load("ready_data/details_" + benign_npy_name, allow_pickle=True)
     else:
         logging.info(f"Creating Dataset {benign_npy_name}")
-        vuln_all, benign_all  = create_dataset(aggr_options, benign_vuln_ratio, hours,
-                                                                            days, resample, backs)
+        vuln_all, benign_all, vuln_details, benign_details = create_dataset(aggr_options, benign_vuln_ratio, hours,
+                                              days, resample, backs)
 
     all_train_x = np.concatenate([vuln_all, benign_all])
-    all_train_y = np.concatenate([np.ones(vuln_all.shape[0]), np.zeros(benign_all.shape[0])])
+    all_train_y = np.concatenate([vuln_details, benign_details])
 
     return all_train_x, all_train_y
 
@@ -316,7 +323,7 @@ def train_model(X_train, y_train, X_test, y_test):
     if logging.INFO <= logging.root.level:
         verbose = 1
 
-    history = model2.fit(X_train, y_train, verbose=verbose, epochs=30, validation_data=(X_test, y_test), callbacks=[])
+    history = model2.fit(X_train, y_train[:,2], verbose=verbose, epochs=30, validation_data=(X_test, y_test[:,2]), callbacks=[])
 
     # print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
     pyplot.plot(history.history['accuracy'])
@@ -340,7 +347,7 @@ def check_results(all_train_x, all_train_y, model):
 
     pred = model.predict(X_test).reshape(-1)
     real = y_test
-    df = DataFrame(zip(real, pred), columns=['real', 'pred','details'])
+    df = DataFrame(zip(real, pred), columns=['real', 'pred', 'details'])
     fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)].index.values
     for fp in fps:
         cur = df.iloc[fp]
