@@ -1,18 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[3]:
-
-
-# get_ipython().system('pip install pandas')
-# get_ipython().system('pip install tqdm')
-# get_ipython().system('pip install -U scikit-learn scipy matplotlib')
-
-
-# In[281]:
-
-import gc
 import os
+import logging
 
 import datetime as dt
 import pandas as pd
@@ -20,300 +10,25 @@ import numpy as np
 import pandas as pd
 import tqdm
 import random
-import pylab
 import random
-
+import itertools
 from datetime import datetime, timedelta
 from dateutil import parser
 from numpy import array
-from tensorflow.keras.layers import Dense, LSTM,GRU
+from tensorflow.keras.layers import Dense, LSTM, GRU
 from tensorflow.keras.optimizers import SGD
 from tensorflow.keras import Sequential
 from collections import Counter
 from pandas import DataFrame
 from enum import Enum
 from matplotlib import pyplot
-
-# get_ipython().run_line_magic('matplotlib', 'inline')
-
-
-# In[5]:
-
-
-def split_sequence(sequence, n_steps):
-    X, y = list(), list()
-    for i in range(len(sequence)):
-        # find the end of this pattern
-        end_ix = i + n_steps
-        # check if we are beyond the sequence
-        if end_ix > len(sequence) - 1:
-            break
-        # gather input and output parts of the pattern
-        seq_x, seq_y = sequence[i:end_ix], sequence[end_ix]
-
-        seq_x = np.pad(seq_x, ((0, 0), (0, 30 - seq_x.shape[1])), 'constant')
-        X.append(seq_x)
-        y.append(seq_y[-1])
-    return array(X), array(y)
-
-
-# In[172]:
-
-
 from matplotlib import pyplot as plt
-def draw_timeline(name,vulns,first_date, last_date):
 
-    dates = vulns
-    dates += [first_date]
-    dates += [last_date]
-
-    values = [1]*len(dates)
-    values[-1] = 2
-    values[-2] = 2
-
-    X = pd.to_datetime(dates)
-    fig, ax = plt.subplots(figsize=(6,1))
-    ax.scatter(X, [1]*len(X), c=values,
-               marker='s', s=100)
-    fig.autofmt_xdate()
-
-    # everything after this is turning off stuff that's plotted by default
-    ax.set_title(name)
-    ax.yaxis.set_visible(True)
-    ax.spines['right'].set_visible(True)
-    ax.spines['left'].set_visible(True)
-    ax.spines['top'].set_visible(True)
-    ax.xaxis.set_ticks_position('bottom')
-    ax.set_facecolor('white')
-    
-    ax.get_yaxis().set_ticklabels([])
-    # day = pd.to_timedelta("1", unit='D')
-    # plt.xlim(X[0] - day, X[-1] + day)
-    plt.show()
-    #plt.subplots_adjust(bottom=0.15)
-    #plt.savefig(f"D:/cve/images/timeline/{name}.jpg", transparent=False)
-    
-    
-def find_benign_events(cur_repo_data,gap_days, num_of_events):
-    benign_events = []
-    retries = num_of_events * 5
-    counter = 0
-    for _ in range(num_of_events):
-        found_event = False
-        while not found_event:
-            if counter >=retries:
-                return benign_events
-            try:
-                cur_event = random.randint(2*gap_days+1,cur_repo_data.shape[0]-gap_days*2-1)
-            except ValueError:
-                counter +=1
-                continue
-            event = cur_repo_data.index[cur_event]
-
-            before_vuln = event - gap_days
-            after_vuln = event + gap_days
-            res_event = cur_repo_data[before_vuln:event-1]
-            if not res_event[res_event["VulnEvent"]>0].empty:
-                counter +=1
-                continue
-            benign_events.append(res_event.iloc[:,:-1].values)
-            found_event = True
-            
-            
-    return benign_events
-
-def create_all_events(cur_repo_data,gap_days):
-    all_events = []
-    labels = []
-    for i in range(gap_days,cur_repo_data.shape[0],1):
-            event = cur_repo_data.index[i]
-            before_vuln = event - gap_days
-            res_event = cur_repo_data[before_vuln:event-1]
-            all_events.append(res_event.iloc[:,:-1].values)
-            labels.append(res_event.iloc[:,-1].values)
-    return all_events,labels
-
-
-def add_time_one_hot_encoding(df):
-    # print(df.index.day_of_week)
-    # print(df.index.hour)
-    hour = pd.get_dummies(df.index.hour.astype(pd.CategoricalDtype(categories=range(24))),prefix='hour')
-    week = pd.get_dummies(df.index.day_of_week.astype(pd.CategoricalDtype(categories=range(7))),prefix='day_of_week')
-    day_of_month = pd.get_dummies(df.index.day.astype(pd.CategoricalDtype(categories=range(1,32))),prefix='day_of_month')
-
-    df = pd.concat([df.reset_index(),hour,week,day_of_month],axis=1)
-    df = df.set_index('index')
-    return df
-
-def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10,resample=24):
-    starting_time = event - timedelta(days=days,hours=hours)
-
-    if aggr_options == Aggregate.before_cve:
-        res = cur_repo_data[starting_time:event]
-        res = res.iloc[:-1,:]
-        res = res.resample(f'{resample}H').sum()
-
-    elif aggr_options == Aggregate.after_cve:
-        res = cur_repo_data[starting_time:event]
-        res = res.iloc[:-1,:]
-        new_row = pd.DataFrame([[0]*len(res.columns)], columns = res.columns, index=[starting_time])
-        res = pd.concat([new_row,res], ignore_index=False)
-        res = res.resample(f'{resample}H').sum()
-    else:
-        res = cur_repo_data.reset_index(drop=True)
-        res = res[event-num_of_events-1:event-1]
-
-    return add_time_one_hot_encoding(res)
-
-def find_best_f1(X_test,y_test,model):
-    max_f1 = 0
-    thresh = 0
-    best_y = 0
-    pred = model.predict(X_test)
-    for i in range(100):
-        y_predict = (pred.reshape(-1)>i/1000).astype(int)
-        precision, recall, fscore, support = score(y_test,y_predict ,zero_division=0)
-        cur_f1 = fscore[1]
-        # print(i,cur_f1)
-        if cur_f1 > max_f1:
-            max_f1 = cur_f1
-            best_y = y_predict
-            thresh = i / 100
-    return max_f1,thresh, best_y
-
-
-# In[313]:
-
-
-repo_dirs = '../repo_gharchive_processed4'
-benign_all, vuln_all = [], []
-n_features = 0
-gap_days = 150
-
-nice_list= ['facebook_hhvm.csv',
-'ffmpeg_ffmpeg.csv',
-'flatpak_flatpak.csv',
-'freerdp_freerdp.csv',
-'git_git.csv',
-'gpac_gpac.csv',
-'imagemagick_imagemagick.csv',
-'kde_kdeconnect-kde.csv',
-'krb5_krb5.csv',
-'mantisbt_mantisbt.csv',
-'op-tee_optee_os.csv',
-'owncloud_core.csv',
-'php_php-src.csv',
-'revive-adserver_revive-adserver.csv',
-'rubygems_rubygems.csv',
-'the-tcpdump-group_tcpdump.csv']
-
-class Aggregate(Enum):
-    none = 1
-    before_cve = 2
-    after_cve = 3
-    
-aggr_options = Aggregate.after_cve
-
-num_of_events = 10
-days = 50
-hours = 0
-resample = 24
-benign_vuln_ratio = 20
-
-
-for file in os.listdir(repo_dirs)[:]:
-    try:
-        selected = 4
-        if file not in nice_list[:]:
-                  continue
-        cur_repo_data = pd.read_csv(repo_dirs + "/" + file,parse_dates=['created_at'],index_col='created_at')
-
-        if cur_repo_data.shape[0]<100:
-            continue
-
-        cur_repo_data = cur_repo_data[cur_repo_data.index.notnull()]
-        cur_repo_data["additions"]=(cur_repo_data["additions"]-cur_repo_data["additions"].mean())/cur_repo_data["additions"].std()
-        cur_repo_data["deletions"]=(cur_repo_data["deletions"]-cur_repo_data["deletions"].mean())/cur_repo_data["deletions"].std()
-
-    except pd.errors.EmptyDataError:
-        continue
-
-
-    cols_at_end = ['VulnEvent']
-    cur_repo_data = cur_repo_data[[c for c in cur_repo_data if c not in cols_at_end]
-                            + [c for c in cols_at_end if c in cur_repo_data]]
-
-    vulns = cur_repo_data.index[cur_repo_data['VulnEvent'] > 0].tolist()
-    benigns = cur_repo_data.index[cur_repo_data['VulnEvent'] == 0].tolist()
-    random.shuffle(benigns)
-    for vuln in vulns:
-        res = get_event_window(cur_repo_data,vuln,aggr_options,days=days,hours=hours,resample=resample)
-        vuln_all.append(res.values)
-    print(file)
-    benign_counter = 0
-    for benign in tqdm.tqdm(benigns):
-        if benign_counter >= benign_vuln_ratio*len(vulns):
-            break
-
-        res = get_event_window(cur_repo_data,benign,aggr_options,days=days,hours=hours,resample=resample)
-        benign_all.append(res.values)            
-        benign_counter+=1
-    print(file)
-    gc.collect()
-
-
-# In[ ]:
-
-
-max_vals = max(Counter([v.shape for v in vuln_all]))
-vuln_all = [v for v in vuln_all if v.shape == max_vals]
-max_vals = max(Counter([v.shape for v in benign_all]))
-benign_all = [v for v in benign_all if v.shape == max_vals]
-
-vuln_all =np.nan_to_num(np.array(vuln_all))
-benign_all = np.nan_to_num(np.array(benign_all)) 
-name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}"
-vuln_npy_name = name_template+"_vuln.npy"
-benign_npy_name = name_template+"_benign.npy"
-
-np.save("ready_data/"+vuln_npy_name, np.array(vuln_all))    # .npy extension is added if not given
-np.save("ready_data/"+benign_npy_name, np.array(benign_all))    # .npy extension is added if not given
-
-
-# In[ ]:
-
-
-
-vuln_all = np.load("ready_data/"+vuln_npy_name)
-benign_all = np.load("ready_data/"+benign_npy_name)
-def normalize(time_series_feature):
-    if time_series_feature.max()-time_series_feature.min() == 0:
-        return time_series_feature
-    return (time_series_feature-time_series_feature.min())/(time_series_feature.max()-time_series_feature.min())
-
-
-# In[ ]:
-
-
-all_train_x = np.concatenate([vuln_all,benign_all])
-all_train_y = np.concatenate([np.ones(vuln_all.shape[0]),np.zeros(benign_all.shape[0])])
-all_train_x.shape,all_train_y.shape
-
-NORMALIZE = True
-
-if NORMALIZE:
-    all_train_x= normalize(all_train_x)
-    vuln_all = normalize(vuln_all)
-    benign_all = normalize(benign_all)
-
-
-# In[ ]:
-
+from helper import normalize, find_best_f1, EnumAction
 
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
-print(all_train_x.shape, all_train_x[0].shape)
-print(all_train_y.shape, all_train_y[0].shape)
+import argparse
 from numpy import mean
 from numpy import std
 from numpy import dstack
@@ -329,63 +44,326 @@ from tensorflow.keras.layers import MaxPooling1D
 from tensorflow.keras import Input, layers
 from tensorflow.keras.callbacks import EarlyStopping
 
-X_train, X_test, y_train, y_test = train_test_split(all_train_x,all_train_y,shuffle=True)
 
-model = Sequential()
-#model.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
-#model.add(MaxPooling1D(pool_size=2))
-#model.add(Flatten())
-#model.add(Dense(100, activation='relu'))
-model.add(Dense(100, activation='relu'))
-model.add(Dropout(0.50))
-model.add(Dense(50, activation='relu'))
-model.add(Dropout(0.50))
-model.add(Dense(25, activation='relu'))
-model.add(Dropout(0.50))
-model.add(Dense(1, activation='sigmoid'))
-model.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), metrics=['accuracy'])
+def find_benign_events(cur_repo_data, gap_days, num_of_events):
+    benign_events = []
+    retries = num_of_events * 5
+    counter = 0
+    for _ in range(num_of_events):
+        found_event = False
+        while not found_event:
+            if counter >= retries:
+                return benign_events
+            try:
+                cur_event = random.randint(2 * gap_days + 1, cur_repo_data.shape[0] - gap_days * 2 - 1)
+            except ValueError:
+                counter += 1
+                continue
+            event = cur_repo_data.index[cur_event]
 
-reshaped_train,reshaped_test = X_train.reshape(X_train.shape[0],-1), X_test.reshape(X_test.shape[0],-1)
+            before_vuln = event - gap_days
+            after_vuln = event + gap_days
+            res_event = cur_repo_data[before_vuln:event - 1]
+            if not res_event[res_event["VulnEvent"] > 0].empty:
+                counter += 1
+                continue
+            benign_events.append(res_event.iloc[:, :-1].values)
+            found_event = True
 
-# define model
-model = Sequential()
-model.add(Conv1D(filters=100, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
-model.add(Dropout(0.8))
-model.add(MaxPooling1D(pool_size=2))
-model.add(Dropout(0.3))
-model.add(Flatten())
-model.add(Dense(100, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(100, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(100, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(70, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(50, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(30, activation='relu'))
-model.add(Dropout(0.3))
-model.add(Dense(1, activation='sigmoid'))
-model.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), metrics=['accuracy'])
-
-es = EarlyStopping(monitor='val_accuracy', mode='max',patience=30)
-
-history = model.fit(X_train, y_train, verbose=1,epochs=50, batch_size=32,validation_data=(X_test,y_test),callbacks=[])
-
-# print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
-pyplot.plot(history.history['accuracy'])
-pyplot.plot(history.history['val_accuracy'])
-pyplot.title('model accuracy')
-pyplot.ylabel('accuracy')
-pyplot.xlabel('epoch')
-pyplot.legend(['train', 'val'], loc='upper left')
-pyplot.show()
+    return benign_events
 
 
-from sklearn.metrics import precision_recall_fscore_support as score
+def create_all_events(cur_repo_data, gap_days):
+    all_events = []
+    labels = []
+    for i in range(gap_days, cur_repo_data.shape[0], 1):
+        event = cur_repo_data.index[i]
+        before_vuln = event - gap_days
+        res_event = cur_repo_data[before_vuln:event - 1]
+        all_events.append(res_event.iloc[:, :-1].values)
+        labels.append(res_event.iloc[:, -1].values)
+    return all_events, labels
 
 
+def add_time_one_hot_encoding(df, with_idx=False):
+    hour = pd.get_dummies(df.index.get_level_values(0).hour.astype(pd.CategoricalDtype(categories=range(24))),
+                          prefix='hour')
+    week = pd.get_dummies(df.index.get_level_values(0).day_of_week.astype(pd.CategoricalDtype(categories=range(7))),
+                          prefix='day_of_week')
+    day_of_month = pd.get_dummies(df.index.get_level_values(0).day.astype(pd.CategoricalDtype(categories=range(1, 32))),
+                                  prefix='day_of_month')
 
-f1,thresh,best_y = find_best_f1(X_test,y_test,model)
-print(f1)
+    df = pd.concat([df.reset_index(), hour, week, day_of_month], axis=1)
+    if with_idx:
+        df = df.set_index(['created_at', 'idx'])
+    else:
+        df = df.set_index(['index'])
+    return df
+
+
+def get_event_window(cur_repo_data, name, event, aggr_options, days=10, hours=10, backs=50, resample=24):
+    starting_time = event[0] - timedelta(days=days, hours=hours)
+    res = cur_repo_data[starting_time:event[0]]
+
+    details = (name, event[0])
+    if aggr_options == Aggregate.before_cve:
+        res = res.iloc[:-1, :]
+        res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
+        res = res.resample(f'{resample}H').sum()
+        res = add_time_one_hot_encoding(res, with_idx=False)
+
+    elif aggr_options == Aggregate.after_cve:
+        res = res.iloc[:-1, :]
+        res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
+        new_row = pd.DataFrame([[0] * len(res.columns)], columns=res.columns, index=[starting_time])
+        res = pd.concat([new_row, res], ignore_index=False)
+        res = res.resample(f'{resample}H').sum()
+        res = add_time_one_hot_encoding(res, with_idx=False)
+
+    else:
+        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[event[1] - backs:event[1]]
+    return (res.values, details)
+
+
+repo_dirs = '../repo_gharchive_processed4'
+benign_all, vuln_all = [], []
+n_features = 0
+gap_days = 150
+
+nice_list = ['facebook_hhvm.csv',
+             'ffmpeg_ffmpeg.csv',
+             'flatpak_flatpak.csv',
+             'freerdp_freerdp.csv',
+             'git_git.csv',
+             'gpac_gpac.csv',
+             'imagemagick_imagemagick.csv',
+             'kde_kdeconnect-kde.csv',
+             'krb5_krb5.csv',
+             'mantisbt_mantisbt.csv',
+             'op-tee_optee_os.csv',
+             # 'owncloud_core.csv',
+             'php_php-src.csv',
+             'revive-adserver_revive-adserver.csv',
+             # 'rubygems_rubygems.csv',
+             # 'the-tcpdump-group_tcpdump.csv'
+             ]
+
+
+class Aggregate(Enum):
+    none = "none"
+    before_cve = "before"
+    after_cve = "after"
+
+
+def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
+    vuln_all, benign_all = [], []
+    for file in os.listdir(repo_dirs)[:]:
+        try:
+            selected = 4
+            if file not in nice_list[:]:
+                continue
+            cur_repo = pd.read_csv(repo_dirs + "/" + file, parse_dates=['created_at'])
+            cur_repo['idx'] = range(len(cur_repo))
+            cur_repo = cur_repo.set_index(["created_at", "idx"])
+            if cur_repo.shape[0] < 100:
+                continue
+
+            # cur_repo = cur_repo[cur_repo.index.notnull()]
+            cur_repo["additions"] = (cur_repo["additions"] - cur_repo["additions"].mean()) / cur_repo["additions"].std()
+            cur_repo["deletions"] = (cur_repo["deletions"] - cur_repo["deletions"].mean()) / cur_repo["deletions"].std()
+
+        except pd.errors.EmptyDataError:
+            continue
+
+        cols_at_end = ['VulnEvent']
+        cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
+                            + [c for c in cols_at_end if c in cur_repo]]
+
+        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
+        benigns = cur_repo.index[cur_repo['VulnEvent'] == 0].tolist()
+        random.shuffle(benigns)
+        if aggr_options == Aggregate.none:
+            cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
+
+        for vuln in tqdm.tqdm(vulns, desc=file + " vuln", leave=False):
+            res, details = get_event_window(cur_repo, file, vuln, aggr_options, days=days, hours=hours, backs=backs,
+                                            resample=resample)
+            vuln_all.append(res)
+
+        benign_counter = 0
+        for benign in tqdm.tqdm(benigns, file + " benign", leave=False):
+            if benign_counter >= benign_vuln_ratio * len(vulns):
+                break
+
+            res, details = get_event_window(cur_repo, file, benign, aggr_options, days=days, hours=hours, backs=backs,
+                                            resample=resample)
+            benign_all.append(res)
+            benign_counter += 1
+
+        # print(file, res.shape, to_padA, to_padB)
+
+    # Padding
+    padded_vuln_all, padded_benign_all = [], []
+    to_pad = max(max(Counter([v.shape[0] for v in vuln_all])), max(Counter([v.shape[0] for v in benign_all])))
+
+    for vuln in vuln_all:
+        padded_vuln_all.append(np.pad(vuln, ((to_pad - vuln.shape[0], 0), (0, 0))))
+
+    for benign in benign_all:
+        padded_benign_all.append(np.pad(benign, ((to_pad - benign.shape[0], 0), (0, 0))))
+
+    vuln_all = np.nan_to_num(np.array(padded_vuln_all))
+    benign_all = np.nan_to_num(np.array(padded_benign_all))
+
+    # Saving To File
+    benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+    np.save("ready_data/" + vuln_npy_name, vuln_all)
+    np.save("ready_data/" + benign_npy_name, benign_all)
+
+    return vuln_all, benign_all
+
+
+def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
+    name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
+    print(name_template)
+    vuln_npy_name = name_template + "_vuln.npy"
+    benign_npy_name = name_template + "_benign.npy"
+    return benign_npy_name, vuln_npy_name
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--hours', type=int, default=0, help='hours back')
+    parser.add_argument('-d', '--days', type=int, default=10, help='days back')
+    parser.add_argument('--resample', type=int, default=24, help='should resample aggregate')
+    parser.add_argument('-r', '--ratio', type=int, default=1, help='benign vuln ratio')
+    parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
+    parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
+    parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
+    args = parser.parse_args()
+    return args
+
+
+def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50):
+    benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+
+    if os.path.isfile("ready_data/" + vuln_npy_name) and os.path.isfile('ready_data/' + benign_npy_name):
+        logging.info(f"Loading Dataset {benign_npy_name}")
+        vuln_all = np.load("ready_data/" + vuln_npy_name)
+        benign_all = np.load("ready_data/" + benign_npy_name)
+        # vuln_details = np.load("ready_data/details_" + vuln_npy_name,allow_pickle=True)
+        # benign_details = np.load("ready_data/details_" + benign_npy_name, allow_pickle=True)
+    else:
+        logging.info(f"Creating Dataset {benign_npy_name}")
+        vuln_all, benign_all  = create_dataset(aggr_options, benign_vuln_ratio, hours,
+                                                                            days, resample, backs)
+
+    all_train_x = np.concatenate([vuln_all, benign_all])
+    all_train_y = np.concatenate([np.ones(vuln_all.shape[0]), np.zeros(benign_all.shape[0])])
+
+    return all_train_x, all_train_y
+
+
+def train_model(X_train, y_train, X_test, y_test):
+    part = 1
+    X_train = X_train[:X_train.shape[0] // part, :, :]
+    X_test = X_test[:X_test.shape[0] // part, :, :]
+    y_train = y_train[:y_train.shape[0] // part]
+    y_test = y_test[:y_test.shape[0] // part]
+
+    model1 = Sequential()
+    model1.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model1.add(MaxPooling1D(pool_size=2))
+    model1.add(Flatten())
+    model1.add(Dense(100, activation='relu'))
+    model1.add(Dropout(0.50))
+    model1.add(Dense(50, activation='relu'))
+    model1.add(Dropout(0.50))
+    model1.add(Dense(25, activation='relu'))
+    model1.add(Dropout(0.50))
+    model1.add(Dense(1, activation='sigmoid'))
+    model1.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                   metrics=['accuracy'])
+
+    reshaped_train, reshaped_test = X_train.reshape(X_train.shape[0], -1), X_test.reshape(X_test.shape[0], -1)
+
+    # define model
+    model2 = Sequential()
+    model2.add(Conv1D(filters=500, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model2.add(Dropout(0.4))
+    model2.add(MaxPooling1D(pool_size=2))
+    model2.add(Dropout(0.3))
+    model2.add(Flatten())
+    model2.add(Dense(100, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(100, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(100, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(70, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(50, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(30, activation='relu'))
+    model2.add(Dropout(0.3))
+    model2.add(Dense(1, activation='sigmoid'))
+    model2.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                   metrics=['accuracy'])
+
+    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=30)
+
+    verbose = 0
+    if logging.INFO <= logging.root.level:
+        verbose = 1
+
+    history = model2.fit(X_train, y_train, verbose=verbose, epochs=30, validation_data=(X_test, y_test), callbacks=[])
+
+    # print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
+    pyplot.plot(history.history['accuracy'])
+    pyplot.plot(history.history['val_accuracy'])
+    pyplot.title('model accuracy')
+    pyplot.ylabel('accuracy')
+    pyplot.xlabel('epoch')
+    pyplot.legend(['train', 'val'], loc='upper left')
+    pyplot.draw()
+    return model2
+
+
+def check_results(all_train_x, all_train_y, model):
+    normalized_all_train_x = normalize(all_train_x)
+
+    X_train, X_test, y_train, y_test = train_test_split(normalized_all_train_x, all_train_y, shuffle=True,
+                                                        random_state=42)
+
+    f1, thresh, best_y = find_best_f1(X_test, y_test, model)
+    print(f1)
+
+    pred = model.predict(X_test).reshape(-1)
+    real = y_test
+    df = DataFrame(zip(real, pred), columns=['real', 'pred','details'])
+    fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)].index.values
+    for fp in fps:
+        cur = df.iloc[fp]
+        print(cur)
+
+
+def main():
+    args = parse_args()
+    logging.basicConfig(level=args.loglevel)
+    all_train_x, all_train_y = extract_dataset(aggr_options=args.aggr,
+                                               resample=args.resample,
+                                               benign_vuln_ratio=args.ratio,
+                                               hours=args.hours,
+                                               days=args.days,
+                                               backs=args.backs)
+    normalized_all_train_x = normalize(all_train_x)
+
+    X_train, X_test, y_train, y_test = train_test_split(normalized_all_train_x, all_train_y, shuffle=True,
+                                                        random_state=42)
+
+    model = train_model(X_train, y_train, X_test, y_test)
+    check_results(all_train_x, all_train_y, model)
+
+
+if __name__ == '__main__':
+    main()
