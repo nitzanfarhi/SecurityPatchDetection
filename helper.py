@@ -1,11 +1,12 @@
 import itertools
-
+import requests
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from matplotlib import pyplot as plt
 from numpy import array
-from sklearn.metrics import precision_recall_fscore_support as score
+from sklearn.metrics import precision_recall_fscore_support as f_score
+from sklearn.metrics import accuracy_score as a_score
 
 import argparse
 import enum
@@ -97,7 +98,7 @@ def find_best_f1(X_test, y_test, model):
     pred = model.predict(X_test)
     for i in range(100):
         y_predict = (pred.reshape(-1) > i / 1000).astype(int)
-        precision, recall, fscore, support = score(y_test, y_predict, zero_division=0)
+        precision, recall, fscore, support = f_score(y_test, y_predict, zero_division=0)
         cur_f1 = fscore[1]
         # print(i,cur_f1)
         if cur_f1 > max_f1:
@@ -105,6 +106,21 @@ def find_best_f1(X_test, y_test, model):
             best_y = y_predict
             thresh = i / 100
     return max_f1, thresh, best_y
+
+def find_best_accuracy(X_test, y_test, model):
+    max_score = 0
+    thresh = 0
+    best_y = 0
+    pred = model.predict(X_test)
+    for i in range(100):
+        y_predict = (pred.reshape(-1) > i / 1000).astype(int)
+        score = a_score(y_test.astype(float), y_predict)
+        # print(i,cur_f1)
+        if score > max_score:
+            max_score = score
+            best_y = y_predict
+            thresh = i / 100
+    return max_score, thresh, best_y
 
 
 def generator(feat, labels):
@@ -132,3 +148,56 @@ def get_predictions(model, x_test_scaled, threshold):
     anomaly_mask = pd.Series(errors) > threshold
     preds = anomaly_mask.map(lambda x: 0.0 if x == True else 1.0)
     return preds
+
+
+token = open(r'C:\secrets\github_token.txt', 'r').read()
+headers = {"Authorization": "token " + token}
+
+
+commits_between_dates = """
+{{
+    repository(owner: "{0}", name:"{1}") {{
+        object(expression: "{2}") {{
+            ... on Commit {{
+                history(first: 100, since: "{3}", until: "{4}") {{
+                    nodes {{
+                      commitUrl,
+                      message
+                    }}
+                }}
+            }}
+    }}
+  }}
+}}
+
+
+
+
+"""
+
+def run_query(query):
+    counter = 0;
+    while True:
+        request = requests.post('https://api.github.com/graphql', json={'query': query}, headers=headers)
+        if request.status_code == 200:
+            return request.json()
+        elif request.status_code == 502:
+            raise Exception(
+                "Query failed to run by returning code of {}. {}".format(request.status_code, request, query))
+        else:
+            request_json = request.json()
+            if "errors" in request_json and (
+                    "timeout" in request_json["errors"][0]["message"]
+                    or request_json["errors"]["type"] == 'RATE_LIMITED'):
+
+                print("Waiting for an hour")
+                print(request, request_json)
+                counter += 1
+                if counter < 6:
+                    time.sleep(60 * 60)
+                    continue
+                break
+
+            raise Exception("Query failed to run by returning code of {}. {}".format(request.status_code, query))
+
+

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
-
+import json
 import os
 import logging
 
@@ -24,7 +24,8 @@ from enum import Enum
 from matplotlib import pyplot
 from matplotlib import pyplot as plt
 
-from helper import normalize, find_best_f1, EnumAction
+import helper
+from helper import normalize, find_best_f1, find_best_accuracy, EnumAction
 
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
@@ -147,6 +148,16 @@ nice_list = ['facebook_hhvm.csv',
              # 'the-tcpdump-group_tcpdump.csv'
              ]
 
+nice_list2 = ['abrt_abrt.csv', 'clusterlabs_pcs.csv', 'discourse_discourse.csv', 'exponentcms_exponent-cms.csv',
+              'facebook_hhvm.csv', 'ffmpeg_ffmpeg.csv', 'file_file.csv', 'firefly-iii_firefly-iii.csv',
+              'flatpak_flatpak.csv', 'freerdp_freerdp.csv', 'fusionpbx_fusionpbx.csv', 'git_git.csv', 'gpac_gpac.csv',
+              'ifmeorg_ifme.csv', 'imagemagick_imagemagick.csv', 'jenkinsci_jenkins.csv', 'kanboard_kanboard.csv',
+              'kde_kdeconnect-kde.csv', 'koral--_android-gif-drawable.csv', 'krb5_krb5.csv',
+              'libarchive_libarchive.csv', 'libgit2_libgit2.csv', 'libraw_libraw.csv',
+              'livehelperchat_livehelperchat.csv', 'mantisbt_mantisbt.csv', 'mdadams_jasper.csv', 'oisf_suricata.csv',
+              'op-tee_optee_os.csv', 'openssh_openssh-portable.csv', 'openssl_openssl.csv', 'owncloud_core.csv',
+              'php_php-src.csv']
+
 
 class Aggregate(Enum):
     none = "none"
@@ -157,29 +168,35 @@ class Aggregate(Enum):
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     vuln_all, benign_all = [], []
     vuln_details, benign_details = [], []
-    for file in os.listdir(repo_dirs)[:]:
+    for file in os.listdir(repo_dirs):
         try:
-            selected = 4
-            if file not in nice_list[:]:
-                continue
             cur_repo = pd.read_csv(repo_dirs + "/" + file, parse_dates=['created_at'])
-            cur_repo['idx'] = range(len(cur_repo))
-            cur_repo = cur_repo.set_index(["created_at", "idx"])
-            if cur_repo.shape[0] < 100:
-                continue
-
-            # cur_repo = cur_repo[cur_repo.index.notnull()]
-            cur_repo["additions"] = (cur_repo["additions"] - cur_repo["additions"].mean()) / cur_repo["additions"].std()
-            cur_repo["deletions"] = (cur_repo["deletions"] - cur_repo["deletions"].mean()) / cur_repo["deletions"].std()
-
         except pd.errors.EmptyDataError:
             continue
+
+        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
+        # if len(vulns) < 10:
+        #     continue
+
+        # print(file, ",", len(vulns))
+
+        cur_repo = cur_repo[cur_repo["created_at"].notnull()]
+
+        cur_repo['idx'] = range(len(cur_repo))
+        cur_repo = cur_repo.set_index(["created_at", "idx"])
+        if cur_repo.shape[0] < 100:
+            continue
+
+        # cur_repo = cur_repo[cur_repo.index.notnull()]
+        cur_repo["additions"] = (cur_repo["additions"] - cur_repo["additions"].mean()) / cur_repo["additions"].std()
+        cur_repo["deletions"] = (cur_repo["deletions"] - cur_repo["deletions"].mean()) / cur_repo["deletions"].std()
+
+        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
 
         cols_at_end = ['VulnEvent']
         cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
                             + [c for c in cols_at_end if c in cur_repo]]
 
-        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
         benigns = cur_repo.index[cur_repo['VulnEvent'] == 0].tolist()
         random.shuffle(benigns)
         if aggr_options == Aggregate.none:
@@ -187,21 +204,22 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         for vuln in tqdm.tqdm(vulns, desc=file + " vuln", leave=False):
             res = get_event_window(cur_repo, vuln, aggr_options, days=days, hours=hours, backs=backs,
-                                            resample=resample)
+                                   resample=resample)
             tag = 1
-            details = (file,vuln,tag)
+            details = (file, vuln, tag)
             vuln_all.append(res)
             vuln_details.append(details)
+
         benign_counter = 0
         for benign in tqdm.tqdm(benigns, file + " benign", leave=False):
             if benign_counter >= benign_vuln_ratio * len(vulns):
                 break
 
             res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
-                                            resample=resample)
-            benign_all.append(res)
+                                   resample=resample)
             tag = 0
-            details = (file,vuln,tag)
+            details = (file, benign, tag)
+            benign_all.append(res)
             benign_details.append(details)
             benign_counter += 1
 
@@ -242,28 +260,31 @@ def parse_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--hours', type=int, default=0, help='hours back')
     parser.add_argument('-d', '--days', type=int, default=10, help='days back')
-    parser.add_argument('--resample', type=int, default=24, help='should resample aggregate')
+    parser.add_argument('--resample', type=int, default=24, help='number of hours that should resample aggregate')
     parser.add_argument('-r', '--ratio', type=int, default=1, help='benign vuln ratio')
     parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
     parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
+    parser.add_argument('-c', '--cache', help="Use Cached Data", action="store_const", dest="cache", const=True)
+
     args = parser.parse_args()
     return args
 
 
-def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50):
+def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50,
+                    cache=False):
     benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
 
-    if os.path.isfile("ready_data/" + vuln_npy_name) and os.path.isfile('ready_data/' + benign_npy_name):
+    if cache and os.path.isfile("ready_data/" + vuln_npy_name) and os.path.isfile('ready_data/' + benign_npy_name):
         logging.info(f"Loading Dataset {benign_npy_name}")
         vuln_all = np.load("ready_data/" + vuln_npy_name)
         benign_all = np.load("ready_data/" + benign_npy_name)
-        vuln_details = np.load("ready_data/details_" + vuln_npy_name,allow_pickle=True)
+        vuln_details = np.load("ready_data/details_" + vuln_npy_name, allow_pickle=True)
         benign_details = np.load("ready_data/details_" + benign_npy_name, allow_pickle=True)
     else:
         logging.info(f"Creating Dataset {benign_npy_name}")
         vuln_all, benign_all, vuln_details, benign_details = create_dataset(aggr_options, benign_vuln_ratio, hours,
-                                              days, resample, backs)
+                                                                            days, resample, backs)
 
     all_train_x = np.concatenate([vuln_all, benign_all])
     all_train_y = np.concatenate([vuln_details, benign_details])
@@ -271,12 +292,14 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     return all_train_x, all_train_y
 
 
-def train_model(X_train, y_train, X_test, y_test):
-    part = 1
-    X_train = X_train[:X_train.shape[0] // part, :, :]
-    X_test = X_test[:X_test.shape[0] // part, :, :]
-    y_train = y_train[:y_train.shape[0] // part]
-    y_test = y_test[:y_test.shape[0] // part]
+def evaluate_data(X_train, y_train, X_test, y_test):
+    # X_train = X_train[:X_train.shape[0] // part, :, :]
+    # X_test = X_test[:X_test.shape[0] // part, :, :]
+    # y_train = y_train[:y_train.shape[0] // part]
+    # y_test = y_test[:y_test.shape[0] // part]
+
+    used_y_train = np.asarray(y_train[:, 2]).astype('float32')
+    used_y_test = np.asarray(y_test[:, 2]).astype('float32')
 
     model1 = Sequential()
     model1.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
@@ -297,33 +320,59 @@ def train_model(X_train, y_train, X_test, y_test):
     # define model
     model2 = Sequential()
     model2.add(Conv1D(filters=500, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
-    model2.add(Dropout(0.4))
+    model2.add(Dropout(0.1))
     model2.add(MaxPooling1D(pool_size=2))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Flatten())
     model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(70, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(50, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(30, activation='relu'))
-    model2.add(Dropout(0.3))
+    model2.add(Dropout(0.1))
     model2.add(Dense(1, activation='sigmoid'))
-    model2.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+    model2.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.1),
                    metrics=['accuracy'])
 
-    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=30)
+    model3 = Sequential()
+    model3.add(LSTM(units=100, activation='relu', name='first_lstm', recurrent_dropout=0.1,
+                    input_shape=(X_train.shape[1], X_train.shape[2])))
+    model3.add(Dense(1, activation="sigmoid"))
+
+    model3.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                   metrics=['accuracy'])
+
+    model4 = Sequential()
+    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu'))
+    model4.add(Dropout(0.5))
+    model4.add(MaxPooling1D(pool_size=2))
+    model4.add(Flatten())
+    model4.add(Dense(100, activation='relu'))
+    model4.add(Dense(1, activation='sigmoid'))
+    model4.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=50)
 
     verbose = 0
     if logging.INFO <= logging.root.level:
         verbose = 1
 
-    history = model2.fit(X_train, y_train[:,2], verbose=verbose, epochs=30, validation_data=(X_test, y_test[:,2]), callbacks=[])
+    model = model4
+    history = model.fit(X_train, used_y_train, verbose=verbose, epochs=20,
+                        validation_data=(X_test, used_y_test), callbacks=[es])
+
+    # Final evaluation of the model
+    scores = model.evaluate(X_test, used_y_test, verbose=0)
+    print("Accuracy: %.2f%%" % (scores[1] * 100))
+
+    check_results(X_test, y_test, model)
 
     # print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
     pyplot.plot(history.history['accuracy'])
@@ -333,25 +382,43 @@ def train_model(X_train, y_train, X_test, y_test):
     pyplot.xlabel('epoch')
     pyplot.legend(['train', 'val'], loc='upper left')
     pyplot.draw()
-    return model2
+    return scores[1] * 100
 
 
-def check_results(all_train_x, all_train_y, model):
-    normalized_all_train_x = normalize(all_train_x)
+def acquire_commits(name, date):
+    group, repo = name.replace(".csv", "").split("_",1)
 
-    X_train, X_test, y_train, y_test = train_test_split(normalized_all_train_x, all_train_y, shuffle=True,
-                                                        random_state=42)
+    github_format = "%Y-%m-%dT00:00:00"
+    for branch in ["master","main"]:
+        res = helper.run_query(
+            helper.commits_between_dates.format(group,
+                                                repo,
+                                                branch,
+                                                date.strftime(github_format),
+                                                (date + timedelta(days=1)).strftime(github_format)
+                                                ))
+        if "data" in res:
+            if "repository" in res["data"]:
+                if "object" in res['data']['repository']:
+                    obj = res['data']['repository']['object']
+                    if obj is None:
+                        continue
+                    if "history" in obj:
+                        return res['data']['repository']['object']['history']['nodes']
+    return ""
 
-    f1, thresh, best_y = find_best_f1(X_test, y_test, model)
-    print(f1)
 
+def check_results(X_test, y_test, model):
     pred = model.predict(X_test).reshape(-1)
-    real = y_test
-    df = DataFrame(zip(real, pred), columns=['real', 'pred', 'details'])
-    fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)].index.values
-    for fp in fps:
-        cur = df.iloc[fp]
-        print(cur)
+    real = y_test[:, 2]
+    date = y_test[:, 1]
+    name = y_test[:, 0]
+    df = DataFrame(zip(real, pred, date, name), columns=['real', 'pred', 'date', 'name'])
+    fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
+    for index, row in fps.iterrows():
+        with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json', 'w+') as mfile:
+            commits = acquire_commits(row["name"], row["date"][0])
+            json.dump(commits,mfile,indent=4, sort_keys=True)
 
 
 def main():
@@ -362,14 +429,15 @@ def main():
                                                benign_vuln_ratio=args.ratio,
                                                hours=args.hours,
                                                days=args.days,
-                                               backs=args.backs)
+                                               backs=args.backs,
+                                               cache=args.cache)
     normalized_all_train_x = normalize(all_train_x)
-
-    X_train, X_test, y_train, y_test = train_test_split(normalized_all_train_x, all_train_y, shuffle=True,
+    # Todo check if needed to normalize
+    X_train, X_test, y_train, y_test = train_test_split(all_train_x, all_train_y, shuffle=True,
                                                         random_state=42)
 
-    model = train_model(X_train, y_train, X_test, y_test)
-    check_results(all_train_x, all_train_y, model)
+    res = evaluate_data(X_train, y_train, X_test, y_test)
+    print(res)
 
 
 if __name__ == '__main__':
