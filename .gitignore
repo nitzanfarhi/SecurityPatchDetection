@@ -3,3 +3,12 @@ images/*
 *.pyc
 *.bak
 .ipynb_checkpoints/*
+*.csv
+/.idea/*
+/figs/*
+/found_vulns.docx
+/models/*
+/output/*
+/output.zip
+/results/*
+*.ipynb
