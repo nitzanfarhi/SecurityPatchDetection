@@ -27,6 +27,7 @@ from matplotlib import pyplot as plt
 import helper
 from helper import normalize, find_best_f1, find_best_accuracy, EnumAction
 
+from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 import argparse
@@ -106,14 +107,16 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     starting_time = event[0] - timedelta(days=days, hours=hours)
     res = cur_repo_data[starting_time:event[0]]
 
+    befs = -4
+
     if aggr_options == Aggregate.before_cve:
-        res = res.iloc[:-1, :]
+        res = res.iloc[:befs, :]
         res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
         res = res.resample(f'{resample}H').sum()
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     elif aggr_options == Aggregate.after_cve:
-        res = res.iloc[:-1, :]
+        res = res.iloc[:befs, :]
         res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
         new_row = pd.DataFrame([[0] * len(res.columns)], columns=res.columns, index=[starting_time])
         res = pd.concat([new_row, res], ignore_index=False)
@@ -121,7 +124,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     else:
-        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[event[1] - backs:event[1]]
+        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[event[1] - backs:event[1]+befs]
     return res.values
 
 
@@ -168,15 +171,15 @@ class Aggregate(Enum):
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     vuln_all, benign_all = [], []
     vuln_details, benign_details = [], []
-    for file in os.listdir(repo_dirs):
+    for file in nice_list: # os.listdir(repo_dirs):
         try:
             cur_repo = pd.read_csv(repo_dirs + "/" + file, parse_dates=['created_at'])
         except pd.errors.EmptyDataError:
             continue
 
         vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
-        # if len(vulns) < 10:
-        #     continue
+        if len(vulns) < 10:
+             continue
 
         # print(file, ",", len(vulns))
 
@@ -256,21 +259,6 @@ def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample
     return benign_npy_name, vuln_npy_name
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--hours', type=int, default=0, help='hours back')
-    parser.add_argument('-d', '--days', type=int, default=10, help='days back')
-    parser.add_argument('--resample', type=int, default=24, help='number of hours that should resample aggregate')
-    parser.add_argument('-r', '--ratio', type=int, default=1, help='benign vuln ratio')
-    parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
-    parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
-    parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-c', '--cache', help="Use Cached Data", action="store_const", dest="cache", const=True)
-
-    args = parser.parse_args()
-    return args
-
-
 def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50,
                     cache=False):
     benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
@@ -289,10 +277,10 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     all_train_x = np.concatenate([vuln_all, benign_all])
     all_train_y = np.concatenate([vuln_details, benign_details])
 
-    return all_train_x, all_train_y
+    return all_train_x, all_train_y, benign_npy_name
 
 
-def evaluate_data(X_train, y_train, X_test, y_test):
+def evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=20):
     # X_train = X_train[:X_train.shape[0] // part, :, :]
     # X_test = X_test[:X_test.shape[0] // part, :, :]
     # y_train = y_train[:y_train.shape[0] // part]
@@ -365,14 +353,14 @@ def evaluate_data(X_train, y_train, X_test, y_test):
         verbose = 1
 
     model = model4
-    history = model.fit(X_train, used_y_train, verbose=verbose, epochs=20,
+    history = model.fit(X_train, used_y_train, verbose=verbose, epochs=epochs,
                         validation_data=(X_test, used_y_test), callbacks=[es])
 
     # Final evaluation of the model
-    scores = model.evaluate(X_test, used_y_test, verbose=0)
-    print("Accuracy: %.2f%%" % (scores[1] * 100))
 
-    check_results(X_test, y_test, model)
+    pred = model.predict(X_test).reshape(-1)
+
+    accuracy = check_results(X_test, y_test, pred, model, exp_name)
 
     # print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
     pyplot.plot(history.history['accuracy'])
@@ -382,14 +370,15 @@ def evaluate_data(X_train, y_train, X_test, y_test):
     pyplot.xlabel('epoch')
     pyplot.legend(['train', 'val'], loc='upper left')
     pyplot.draw()
-    return scores[1] * 100
+    pyplot.savefig(f"figs/{exp_name}.png")
+    return accuracy
 
 
 def acquire_commits(name, date):
-    group, repo = name.replace(".csv", "").split("_",1)
+    group, repo = name.replace(".csv", "").split("_", 1)
 
     github_format = "%Y-%m-%dT00:00:00"
-    for branch in ["master","main"]:
+    for branch in ["master", "main"]:
         res = helper.run_query(
             helper.commits_between_dates.format(group,
                                                 repo,
@@ -408,23 +397,51 @@ def acquire_commits(name, date):
     return ""
 
 
-def check_results(X_test, y_test, model):
-    pred = model.predict(X_test).reshape(-1)
+def check_results(X_test, y_test, pred, model, exp_name):
+    used_y_test = np.asarray(y_test[:, 2]).astype('float32')
+    scores = model.evaluate(X_test, used_y_test, verbose=0)
+    max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
+
+    with open(f"results/{exp_name}.txt",'w') as mfile:
+        mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
+        mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
+
+        print('Accuracy: %.2f%%' % (scores[1] * 100))
+        print('fscore: %.2f%%' % (max_f1 * 100))
+
     real = y_test[:, 2]
     date = y_test[:, 1]
     name = y_test[:, 0]
     df = DataFrame(zip(real, pred, date, name), columns=['real', 'pred', 'date', 'name'])
     fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
-    for index, row in fps.iterrows():
-        with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json', 'w+') as mfile:
+    for index, row in tqdm.tqdm(list(fps.iterrows())):
+        with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json',
+                  'w+') as mfile:
             commits = acquire_commits(row["name"], row["date"][0])
-            json.dump(commits,mfile,indent=4, sort_keys=True)
+            json.dump(commits, mfile, indent=4, sort_keys=True)
+    return scores[1]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--hours', type=int, default=0, help='hours back')
+    parser.add_argument('-d', '--days', type=int, default=10, help='days back')
+    parser.add_argument('--resample', type=int, default=24, help='number of hours that should resample aggregate')
+    parser.add_argument('-r', '--ratio', type=int, default=1, help='benign vuln ratio')
+    parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
+    parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
+    parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
+    parser.add_argument('-c', '--cache','--cached', help="Use Cached Data", action="store_const", dest="cache", const=True)
+    parser.add_argument('-e', '--epochs', type=int, default=10, help=' using none aggregation, operations back')
+
+    args = parser.parse_args()
+    return args
 
 
 def main():
     args = parse_args()
     logging.basicConfig(level=args.loglevel)
-    all_train_x, all_train_y = extract_dataset(aggr_options=args.aggr,
+    all_train_x, all_train_y, exp_name = extract_dataset(aggr_options=args.aggr,
                                                resample=args.resample,
                                                benign_vuln_ratio=args.ratio,
                                                hours=args.hours,
@@ -436,7 +453,7 @@ def main():
     X_train, X_test, y_train, y_test = train_test_split(all_train_x, all_train_y, shuffle=True,
                                                         random_state=42)
 
-    res = evaluate_data(X_train, y_train, X_test, y_test)
+    res = evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=args.epochs)
     print(res)
 
 

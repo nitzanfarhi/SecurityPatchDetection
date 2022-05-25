@@ -97,7 +97,7 @@ def find_best_f1(X_test, y_test, model):
     best_y = 0
     pred = model.predict(X_test)
     for i in range(100):
-        y_predict = (pred.reshape(-1) > i / 1000).astype(int)
+        y_predict = (pred.reshape(-1) > i / 100).astype(int)
         precision, recall, fscore, support = f_score(y_test, y_predict, zero_division=0)
         cur_f1 = fscore[1]
         # print(i,cur_f1)
