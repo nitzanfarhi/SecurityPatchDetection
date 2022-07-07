@@ -3,7 +3,7 @@
 import json
 import os
 import logging
-
+import pickle
 import datetime as dt
 import pandas as pd
 import numpy as np
@@ -12,6 +12,7 @@ import tqdm
 import random
 import random
 import itertools
+
 from datetime import datetime, timedelta
 from dateutil import parser
 from numpy import array
@@ -23,12 +24,15 @@ from pandas import DataFrame
 from enum import Enum
 from matplotlib import pyplot
 from matplotlib import pyplot as plt
+from classes import Repository
 
 import helper
 from helper import normalize, find_best_f1, find_best_accuracy, EnumAction
 
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, auc
+
 import tensorflow as tf
 import argparse
 from numpy import mean
@@ -104,10 +108,23 @@ def add_time_one_hot_encoding(df, with_idx=False):
 
 
 def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, backs=50, resample=24):
+    """
+
+    :param cur_repo_data: DataFrame that is processed
+    :param event: list of events to get windows from
+    :param aggr_options: can be before, after or none, to decide how we agregate
+    :param days: if 'before' or 'after' is choosed as aggr_options
+        amount of days gathered as a single window (in addition to hours)
+    :param hours: if 'before' or 'after' is choosed as aggr_options
+        amount of hours gathered as a single window (in addition to days)
+    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
+    :param resample: is the data resampled and at what frequency (hours)
+    :return:
+    """
     starting_time = event[0] - timedelta(days=days, hours=hours)
     res = cur_repo_data[starting_time:event[0]]
 
-    befs = -4
+    befs = -1
 
     if aggr_options == Aggregate.before_cve:
         res = res.iloc[:befs, :]
@@ -124,7 +141,8 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     else:
-        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[event[1] - backs:event[1]+befs]
+        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
+              event[1] - backs:event[1] + befs]
     return res.values
 
 
@@ -169,9 +187,26 @@ class Aggregate(Enum):
 
 
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
-    vuln_all, benign_all = [], []
-    vuln_details, benign_details = [], []
-    for file in nice_list: # os.listdir(repo_dirs):
+    """
+
+    :param aggr_options:
+    :param benign_vuln_ratio:
+    :param hours:
+    :param days:
+    :param resample:
+    :param backs:
+    :return:
+    """
+    all_repos = []
+    dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+    try:
+        os.mkdir("ready_data/" + dirname)
+    except FileExistsError:
+        pass
+
+    for file in nice_list2[:]:  # os.listdir(repo_dirs):
+        repo_holder = Repository()
+        repo_holder.file = file
         try:
             cur_repo = pd.read_csv(repo_dirs + "/" + file, parse_dates=['created_at'])
         except pd.errors.EmptyDataError:
@@ -179,7 +214,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
         if len(vulns) < 10:
-             continue
+            continue
 
         # print(file, ",", len(vulns))
 
@@ -210,8 +245,8 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
                                    resample=resample)
             tag = 1
             details = (file, vuln, tag)
-            vuln_all.append(res)
-            vuln_details.append(details)
+            repo_holder.vuln_lst.append(res)
+            repo_holder.vuln_details.append(details)
 
         benign_counter = 0
         for benign in tqdm.tqdm(benigns, file + " benign", leave=False):
@@ -222,33 +257,16 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
                                    resample=resample)
             tag = 0
             details = (file, benign, tag)
-            benign_all.append(res)
-            benign_details.append(details)
+            repo_holder.benign_lst.append(res)
+            repo_holder.benign_details.append(details)
             benign_counter += 1
 
-        # print(file, res.shape, to_padA, to_padB)
+        repo_holder.pad_repo()
+        with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
+            pickle.dump(repo_holder, f)
+        all_repos.append(repo_holder)
 
-    # Padding
-    padded_vuln_all, padded_benign_all = [], []
-    to_pad = max(max(Counter([v.shape[0] for v in vuln_all])), max(Counter([v.shape[0] for v in benign_all])))
-
-    for vuln in vuln_all:
-        padded_vuln_all.append(np.pad(vuln, ((to_pad - vuln.shape[0], 0), (0, 0))))
-
-    for benign in benign_all:
-        padded_benign_all.append(np.pad(benign, ((to_pad - benign.shape[0], 0), (0, 0))))
-
-    vuln_all = np.nan_to_num(np.array(padded_vuln_all))
-    benign_all = np.nan_to_num(np.array(padded_benign_all))
-
-    # Saving To File
-    benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
-    np.save("ready_data/" + vuln_npy_name, vuln_all)
-    np.save("ready_data/" + benign_npy_name, benign_all)
-    np.save("ready_data/details_" + vuln_npy_name, vuln_details)
-    np.save("ready_data/details_" + benign_npy_name, benign_details)
-
-    return vuln_all, benign_all, vuln_details, benign_details
+    return all_repos
 
 
 def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
@@ -259,35 +277,39 @@ def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample
     return benign_npy_name, vuln_npy_name
 
 
+def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
+    name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
+    print(name_template)
+    return name_template
+
+
 def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50,
                     cache=False):
-    benign_npy_name, vuln_npy_name = make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+    dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
 
-    if cache and os.path.isfile("ready_data/" + vuln_npy_name) and os.path.isfile('ready_data/' + benign_npy_name):
-        logging.info(f"Loading Dataset {benign_npy_name}")
-        vuln_all = np.load("ready_data/" + vuln_npy_name)
-        benign_all = np.load("ready_data/" + benign_npy_name)
-        vuln_details = np.load("ready_data/details_" + vuln_npy_name, allow_pickle=True)
-        benign_details = np.load("ready_data/details_" + benign_npy_name, allow_pickle=True)
+    if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
+        logging.info(f"Loading Dataset {dirname}")
+        all_repos = []
+        for file in os.listdir("ready_data/" + dirname):
+            with open("ready_data/" + dirname + "/" + file, 'rb') as f:
+                repo = pickle.load(f)
+                all_repos.append(repo)
+
     else:
-        logging.info(f"Creating Dataset {benign_npy_name}")
-        vuln_all, benign_all, vuln_details, benign_details = create_dataset(aggr_options, benign_vuln_ratio, hours,
-                                                                            days, resample, backs)
+        logging.info(f"Creating Dataset {dirname}")
+        all_repos = create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs)
 
-    all_train_x = np.concatenate([vuln_all, benign_all])
-    all_train_y = np.concatenate([vuln_details, benign_details])
-
-    return all_train_x, all_train_y, benign_npy_name
+    return all_repos, dirname
 
 
-def evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=20):
+def evaluate_data(X_train, y_train, X_test, y_test, exp_name, epochs=20, fp=False):
     # X_train = X_train[:X_train.shape[0] // part, :, :]
     # X_test = X_test[:X_test.shape[0] // part, :, :]
     # y_train = y_train[:y_train.shape[0] // part]
     # y_test = y_test[:y_test.shape[0] // part]
 
-    used_y_train = np.asarray(y_train[:, 2]).astype('float32')
-    used_y_test = np.asarray(y_test[:, 2]).astype('float32')
+    used_y_train = np.asarray(y_train).astype('float32')
+    used_y_test = np.asarray(y_test).astype('float32')
 
     model1 = Sequential()
     model1.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
@@ -353,16 +375,9 @@ def evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=20):
         verbose = 1
 
     model = model4
-    history = model.fit(X_train, used_y_train, verbose=verbose, epochs=epochs,
+    history = model.fit(X_train, used_y_train, verbose=verbose, epochs=epochs, shuffle=True,
                         validation_data=(X_test, used_y_test), callbacks=[es])
 
-    # Final evaluation of the model
-
-    pred = model.predict(X_test).reshape(-1)
-
-    accuracy = check_results(X_test, y_test, pred, model, exp_name)
-
-    # print(model.evaluate(X_test.reshape(X_test.shape[0],-1), y_test, verbose=0))
     pyplot.plot(history.history['accuracy'])
     pyplot.plot(history.history['val_accuracy'])
     pyplot.title('model accuracy')
@@ -370,7 +385,13 @@ def evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=20):
     pyplot.xlabel('epoch')
     pyplot.legend(['train', 'val'], loc='upper left')
     pyplot.draw()
-    pyplot.savefig(f"figs/{exp_name}.png")
+    pyplot.savefig(f"figs/{exp_name}_{epochs}.png")
+
+    # Final evaluation of the model
+    pred = model.predict(X_test).reshape(-1)
+
+    accuracy = check_results(X_test, y_test, pred, model, exp_name, fp=fp)
+
     return accuracy
 
 
@@ -397,28 +418,47 @@ def acquire_commits(name, date):
     return ""
 
 
-def check_results(X_test, y_test, pred, model, exp_name):
-    used_y_test = np.asarray(y_test[:, 2]).astype('float32')
+def check_results(X_test, y_test, pred, model, exp_name, fp=False):
+    used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
-
-    with open(f"results/{exp_name}.txt",'w') as mfile:
+    print(max_f1, thresh)
+    with open(f"results/{exp_name}.txt", 'w') as mfile:
         mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
         mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
 
         print('Accuracy: %.2f%%' % (scores[1] * 100))
         print('fscore: %.2f%%' % (max_f1 * 100))
 
-    real = y_test[:, 2]
-    date = y_test[:, 1]
-    name = y_test[:, 0]
-    df = DataFrame(zip(real, pred, date, name), columns=['real', 'pred', 'date', 'name'])
-    fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
-    for index, row in tqdm.tqdm(list(fps.iterrows())):
-        with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json',
-                  'w+') as mfile:
-            commits = acquire_commits(row["name"], row["date"][0])
-            json.dump(commits, mfile, indent=4, sort_keys=True)
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    fpr["micro"], tpr["micro"], _ = roc_curve(used_y_test, pred)
+    roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+    plt.figure()
+    lw = 2
+
+    plt.plot(fpr['micro'], tpr['micro'], color="darkorange", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc['micro'])
+    plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Receiver operating characteristic example")
+    plt.legend(loc="lower right")
+    plt.show()
+
+    if fp:
+        real = y_test[:, 2]
+        date = y_test[:, 1]
+        name = y_test[:, 0]
+        df = DataFrame(zip(real, pred, date, name), columns=['real', 'pred', 'date', 'name'])
+        fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
+        for index, row in tqdm.tqdm(list(fps.iterrows())):
+            with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json',
+                      'w+') as mfile:
+                commits = acquire_commits(row["name"], row["date"][0])
+                json.dump(commits, mfile, indent=4, sort_keys=True)
     return scores[1]
 
 
@@ -431,29 +471,47 @@ def parse_args():
     parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
     parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-c', '--cache','--cached', help="Use Cached Data", action="store_const", dest="cache", const=True)
+    parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data", action="store_const", dest="cache",
+                        const=True)
     parser.add_argument('-e', '--epochs', type=int, default=10, help=' using none aggregation, operations back')
+    parser.add_argument('-f', '--find-fp', help="Find False positive commits", action="store_const",
+                        dest="fp", const=True)
 
     args = parser.parse_args()
     return args
 
 
+def split_into_x_and_y(repos):
+    X_train, y_train = [], []
+    for repo in repos:
+        x, y = repo.get_all_lst()
+        X_train.append(x)
+        y_train.append(y)
+    X_train = np.concatenate(X_train)
+    y_train = np.concatenate(y_train)
+    return X_train, y_train
+
+
 def main():
     args = parse_args()
     logging.basicConfig(level=args.loglevel)
-    all_train_x, all_train_y, exp_name = extract_dataset(aggr_options=args.aggr,
-                                               resample=args.resample,
-                                               benign_vuln_ratio=args.ratio,
-                                               hours=args.hours,
-                                               days=args.days,
-                                               backs=args.backs,
-                                               cache=args.cache)
-    normalized_all_train_x = normalize(all_train_x)
-    # Todo check if needed to normalize
-    X_train, X_test, y_train, y_test = train_test_split(all_train_x, all_train_y, shuffle=True,
-                                                        random_state=42)
+    all_repos, exp_name = extract_dataset(aggr_options=args.aggr,
+                                          resample=args.resample,
+                                          benign_vuln_ratio=args.ratio,
+                                          hours=args.hours,
+                                          days=args.days,
+                                          backs=args.backs,
+                                          cache=args.cache)
 
-    res = evaluate_data(X_train, y_train, X_test, y_test,exp_name, epochs=args.epochs)
+    train_size = int(0.8 * len(all_repos))
+
+    train_repos = all_repos[:train_size]
+    test_repos = all_repos[train_size:]
+
+    X_train, y_train = split_into_x_and_y(train_repos)
+    X_test, y_test = split_into_x_and_y(test_repos)
+
+    res = evaluate_data(X_train, y_train, X_test, y_test, exp_name, epochs=args.epochs, fp=args.fp)
     print(res)
 
 
