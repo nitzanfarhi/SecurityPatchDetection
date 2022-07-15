@@ -52,6 +52,12 @@ from tensorflow.keras.callbacks import EarlyStopping
 
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
+    """
+    :param cur_repo_data: DataFrame that is processed
+    :param gap_days: number of days to look back for the events
+    :param num_of_events: number of events to find
+    :return: list of all events
+    """
     benign_events = []
     retries = num_of_events * 5
     counter = 0
@@ -80,6 +86,11 @@ def find_benign_events(cur_repo_data, gap_days, num_of_events):
 
 
 def create_all_events(cur_repo_data, gap_days):
+    """
+    :param cur_repo_data: DataFrame that is processed
+    :param gap_days: number of days to look back for the events
+    :return: list of all events
+    """
     all_events = []
     labels = []
     for i in range(gap_days, cur_repo_data.shape[0], 1):
@@ -92,6 +103,12 @@ def create_all_events(cur_repo_data, gap_days):
 
 
 def add_time_one_hot_encoding(df, with_idx=False):
+    """
+    :param df: dataframe to add time one hot encoding to
+    :param with_idx: if true, adds index column to the dataframe
+    :return: dataframe with time one hot encoding
+    """
+
     hour = pd.get_dummies(df.index.get_level_values(0).hour.astype(pd.CategoricalDtype(categories=range(24))),
                           prefix='hour')
     week = pd.get_dummies(df.index.get_level_values(0).day_of_week.astype(pd.CategoricalDtype(categories=range(7))),
@@ -189,13 +206,13 @@ class Aggregate(Enum):
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     """
 
-    :param aggr_options:
-    :param benign_vuln_ratio:
-    :param hours:
-    :param days:
-    :param resample:
-    :param backs:
-    :return:
+    :param aggr_options: can be before, after or none, to decide how we agregate
+    :param benign_vuln_ratio: ratio of benign to vuln
+    :param hours: if 'before' or 'after' is choosed as aggr_options
+    :param days:    if 'before' or 'after' is choosed as aggr_options
+    :param resample: is the data resampled and at what frequency (hours)
+    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
+    :return: dataset
     """
     all_repos = []
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
@@ -269,15 +286,10 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     return all_repos
 
 
-def make_file_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
-    name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
-    print(name_template)
-    vuln_npy_name = name_template + "_vuln.npy"
-    benign_npy_name = name_template + "_benign.npy"
-    return benign_npy_name, vuln_npy_name
-
-
 def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
+    """
+    :return: name of the directory to save the data in
+    """
     name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
     print(name_template)
     return name_template
@@ -285,6 +297,17 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
 
 def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50,
                     cache=False):
+    """
+    :param aggr_options: Aggregate.none, Aggregate.before_cve, Aggregate.after_cve
+    :param benign_vuln_ratio: ratio of benign to vuln events
+    :param hours: hours before and after vuln event
+    :param days: days before and after vuln event
+    :param resample: resample window
+    :param backs: number of backs to use
+    :param cache: if true, will use cached data
+    :return: a list of Repository objects and dir name
+    """
+
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
 
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
@@ -302,7 +325,10 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     return all_repos, dirname
 
 
-def evaluate_data(X_train, y_train, X_test, y_test, exp_name, epochs=20, fp=False):
+def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs=20, fp=False):
+    """
+    Evaluate the model with the given data.
+    """
     # X_train = X_train[:X_train.shape[0] // part, :, :]
     # X_test = X_test[:X_test.shape[0] // part, :, :]
     # y_train = y_train[:y_train.shape[0] // part]
@@ -396,6 +422,9 @@ def evaluate_data(X_train, y_train, X_test, y_test, exp_name, epochs=20, fp=Fals
 
 
 def acquire_commits(name, date):
+    """
+    Acquire the commits for the given repository.
+    """
     group, repo = name.replace(".csv", "").split("_", 1)
 
     github_format = "%Y-%m-%dT00:00:00"
@@ -419,6 +448,9 @@ def acquire_commits(name, date):
 
 
 def check_results(X_test, y_test, pred, model, exp_name, fp=False):
+    """
+    Check the results of the model.
+    """
     used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
@@ -482,6 +514,9 @@ def parse_args():
 
 
 def split_into_x_and_y(repos):
+    """
+    Split the repos into X and Y.
+    """
     X_train, y_train = [], []
     for repo in repos:
         x, y = repo.get_all_lst()
@@ -503,15 +538,19 @@ def main():
                                           backs=args.backs,
                                           cache=args.cache)
 
-    train_size = int(0.8 * len(all_repos))
+    train_size = int(0.7 * len(all_repos))
+    validation_size = int(0.15 * len(all_repos))
+    test_size = int(0.15 * len(all_repos))
 
     train_repos = all_repos[:train_size]
-    test_repos = all_repos[train_size:]
+    validation_repos = all_repos[train_size:train_size+validation_size]
+    test_repos = all_repos[train_size+validation_size:]
 
     X_train, y_train = split_into_x_and_y(train_repos)
+    X_val, y_val = split_into_x_and_y(validation_repos)
     X_test, y_test = split_into_x_and_y(test_repos)
 
-    res = evaluate_data(X_train, y_train, X_test, y_test, exp_name, epochs=args.epochs, fp=args.fp)
+    res = evaluate_data(X_train, y_train, X_val,y_val, X_test, y_test, exp_name, epochs=args.epochs, fp=args.fp)
     print(res)
 
 
