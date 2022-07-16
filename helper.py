@@ -2,7 +2,6 @@ import itertools
 import requests
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 from matplotlib import pyplot as plt
 from numpy import array
 from sklearn.metrics import precision_recall_fscore_support as f_score
@@ -132,6 +131,7 @@ def generator(feat, labels):
 
 
 def find_threshold(model, x_train_scaled):
+    import tensorflow as tf
     reconstructions = model.predict(x_train_scaled)
     # provides losses of individual instances
     reconstruction_errors = tf.keras.losses.msle(reconstructions, x_train_scaled)
@@ -141,6 +141,8 @@ def find_threshold(model, x_train_scaled):
 
 
 def get_predictions(model, x_test_scaled, threshold):
+    import tensorflow as tf
+
     predictions = model.predict(x_test_scaled)
     # provides losses of individual instances
     errors = tf.keras.losses.msle(predictions, x_test_scaled)

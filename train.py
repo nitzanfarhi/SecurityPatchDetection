@@ -10,15 +10,12 @@ import numpy as np
 import pandas as pd
 import tqdm
 import random
-import random
 import itertools
 
 from datetime import datetime, timedelta
 from dateutil import parser
 from numpy import array
-from tensorflow.keras.layers import Dense, LSTM, GRU
-from tensorflow.keras.optimizers import SGD
-from tensorflow.keras import Sequential
+
 from collections import Counter
 from pandas import DataFrame
 from enum import Enum
@@ -33,7 +30,6 @@ from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc
 
-import tensorflow as tf
 import argparse
 from numpy import mean
 from numpy import std
@@ -41,14 +37,6 @@ from numpy import dstack
 from pandas import read_csv
 from matplotlib import pyplot
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.layers import Flatten
-from tensorflow.keras.layers import Dropout
-from tensorflow.keras.layers import Conv1D
-from tensorflow.keras.layers import MaxPooling1D
-from tensorflow.keras import Input, layers
-from tensorflow.keras.callbacks import EarlyStopping
 
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
@@ -102,6 +90,18 @@ def create_all_events(cur_repo_data, gap_days):
     return all_events, labels
 
 
+
+event_types = {'ForkEvent', 'commits', 'DeleteEvent', 'CreateEvent', 'IssuesEvent', 'issues', 'WatchEvent', 'PullRequestReviewCommentEvent', 'IssueCommentEvent', 'releases', 'ReleaseEvent', 'PullRequestReviewEvent', 'GollumEvent', 'stargazers', 'MemberEvent', 'VulnEvent', 'forks', 'CommitCommentEvent', 'pullRequests', 'PushEvent', 'PullRequestEvent'}  
+
+def add_type_one_hot_encoding(df):
+    """
+    :param df: dataframe to add type one hot encoding to
+    :return: dataframe with type one hot encoding
+    """
+    type_one_hot = pd.get_dummies(df.type, columns = list(event_types), prefix='type')
+    df = pd.concat([df, type_one_hot], axis=1)
+    return df
+
 def add_time_one_hot_encoding(df, with_idx=False):
     """
     :param df: dataframe to add time one hot encoding to
@@ -111,7 +111,7 @@ def add_time_one_hot_encoding(df, with_idx=False):
 
     hour = pd.get_dummies(df.index.get_level_values(0).hour.astype(pd.CategoricalDtype(categories=range(24))),
                           prefix='hour')
-    week = pd.get_dummies(df.index.get_level_values(0).day_of_week.astype(pd.CategoricalDtype(categories=range(7))),
+    week = pd.get_dummies(df.index.get_level_values(0).dayofweek.astype(pd.CategoricalDtype(categories=range(7))),
                           prefix='day_of_week')
     day_of_month = pd.get_dummies(df.index.get_level_values(0).day.astype(pd.CategoricalDtype(categories=range(1, 32))),
                                   prefix='day_of_month')
@@ -138,18 +138,10 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     :param resample: is the data resampled and at what frequency (hours)
     :return:
     """
-    starting_time = event[0] - timedelta(days=days, hours=hours)
-    res = cur_repo_data[starting_time:event[0]]
-
     befs = -1
-
-    if aggr_options == Aggregate.before_cve:
-        res = res.iloc[:befs, :]
-        res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
-        res = res.resample(f'{resample}H').sum()
-        res = add_time_one_hot_encoding(res, with_idx=False)
-
-    elif aggr_options == Aggregate.after_cve:
+    if aggr_options == Aggregate.after_cve:
+        starting_time = event[0] - timedelta(days=days, hours=hours)
+        res = cur_repo_data[starting_time:event[0]]
         res = res.iloc[:befs, :]
         res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
         new_row = pd.DataFrame([[0] * len(res.columns)], columns=res.columns, index=[starting_time])
@@ -157,13 +149,13 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         res = res.resample(f'{resample}H').sum()
         res = add_time_one_hot_encoding(res, with_idx=False)
 
-    else:
+    elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
               event[1] - backs:event[1] + befs]
     return res.values
 
 
-repo_dirs = '../repo_gharchive_processed4'
+repo_dirs = 'hiddenCVE/gh_cve_proccessed'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
@@ -202,7 +194,6 @@ class Aggregate(Enum):
     before_cve = "before"
     after_cve = "after"
 
-
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     """
 
@@ -215,13 +206,15 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     :return: dataset
     """
     all_repos = []
+    all_set = set()
+
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
     try:
         os.mkdir("ready_data/" + dirname)
     except FileExistsError:
         pass
 
-    for file in nice_list2[:]:  # os.listdir(repo_dirs):
+    for file in nice_list2[:5]:  # os.listdir(repo_dirs):
         repo_holder = Repository()
         repo_holder.file = file
         try:
@@ -229,31 +222,40 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         except pd.errors.EmptyDataError:
             continue
 
-        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
-        if len(vulns) < 10:
-            continue
-
-        # print(file, ",", len(vulns))
-
         cur_repo = cur_repo[cur_repo["created_at"].notnull()]
-
+        all_set.update(cur_repo.type.unique())
         cur_repo['idx'] = range(len(cur_repo))
         cur_repo = cur_repo.set_index(["created_at", "idx"])
         if cur_repo.shape[0] < 100:
             continue
 
         # cur_repo = cur_repo[cur_repo.index.notnull()]
-        cur_repo["additions"] = (cur_repo["additions"] - cur_repo["additions"].mean()) / cur_repo["additions"].std()
-        cur_repo["deletions"] = (cur_repo["deletions"] - cur_repo["deletions"].mean()) / cur_repo["deletions"].std()
+        for commit_change in ["additions", "deletions"]:
+            cur_repo[commit_change].fillna(0, inplace=True)
+            cur_repo[commit_change] = cur_repo[commit_change].astype(int)
+            cur_repo[commit_change] = (cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
 
-        vulns = cur_repo.index[cur_repo['VulnEvent'] > 0].tolist()
 
-        cols_at_end = ['VulnEvent']
+
+        cur_repo["is_vuln"] = cur_repo.type.apply(lambda x: 1 if x == "VulnEvent" else 0)
+
+        cur_repo = add_type_one_hot_encoding(cur_repo)
+        cur_repo = cur_repo.drop(["type"], axis=1)
+        cur_repo = cur_repo.drop(["name"], axis=1)
+
+        vulns = cur_repo.index[cur_repo['is_vuln'] > 0].tolist()
+        if len(vulns) < 10:
+            continue
+
+        print(file, ",", len(vulns))
+
+        benigns = cur_repo.index[cur_repo['is_vuln'] == 0].tolist()
+        random.shuffle(benigns)
+
+        cols_at_end = ['is_vuln']
         cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
                             + [c for c in cols_at_end if c in cur_repo]]
 
-        benigns = cur_repo.index[cur_repo['VulnEvent'] == 0].tolist()
-        random.shuffle(benigns)
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
@@ -265,10 +267,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             repo_holder.vuln_lst.append(res)
             repo_holder.vuln_details.append(details)
 
-        benign_counter = 0
-        for benign in tqdm.tqdm(benigns, file + " benign", leave=False):
-            if benign_counter >= benign_vuln_ratio * len(vulns):
-                break
+        for benign in tqdm.tqdm(benigns[:benign_vuln_ratio*len(vulns)], file + " benign", leave=False):
 
             res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
                                    resample=resample)
@@ -276,13 +275,13 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             details = (file, benign, tag)
             repo_holder.benign_lst.append(res)
             repo_holder.benign_details.append(details)
-            benign_counter += 1
 
+        repo_holder.benign_lst
         repo_holder.pad_repo()
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
         all_repos.append(repo_holder)
-
+    print(all_set)
     return all_repos
 
 
@@ -326,6 +325,22 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
 
 
 def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs=20, fp=False):
+
+    import tensorflow as tf
+
+    from tensorflow.keras.layers import Dense, LSTM, GRU
+    from tensorflow.keras.optimizers import SGD
+    from tensorflow.keras import Sequential
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense
+    from tensorflow.keras.layers import Flatten
+    from tensorflow.keras.layers import Dropout
+    from tensorflow.keras.layers import Conv1D
+    from tensorflow.keras.layers import MaxPooling1D
+    from tensorflow.keras import Input, layers
+    from tensorflow.keras.callbacks import EarlyStopping
+
+
     """
     Evaluate the model with the given data.
     """
