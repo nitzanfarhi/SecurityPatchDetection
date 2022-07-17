@@ -90,15 +90,15 @@ def create_all_events(cur_repo_data, gap_days):
     return all_events, labels
 
 
+event_types = ['PullRequestEvent', 'PushEvent', 'ReleaseEvent', 'DeleteEvent', 'issues', 'CreateEvent', 'releases', 'IssuesEvent', 'ForkEvent', 'WatchEvent', 'PullRequestReviewCommentEvent', 'stargazers', 'pullRequests', 'commits', 'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent', 'forks', 'PullRequestReviewEvent', 'PublicEvent', 'VulnEvent']
 
-event_types = {'ForkEvent', 'commits', 'DeleteEvent', 'CreateEvent', 'IssuesEvent', 'issues', 'WatchEvent', 'PullRequestReviewCommentEvent', 'IssueCommentEvent', 'releases', 'ReleaseEvent', 'PullRequestReviewEvent', 'GollumEvent', 'stargazers', 'MemberEvent', 'VulnEvent', 'forks', 'CommitCommentEvent', 'pullRequests', 'PushEvent', 'PullRequestEvent'}  
 
 def add_type_one_hot_encoding(df):
     """
     :param df: dataframe to add type one hot encoding to
     :return: dataframe with type one hot encoding
     """
-    type_one_hot = pd.get_dummies(df.type, columns = list(event_types), prefix='type')
+    type_one_hot = pd.get_dummies(df.type.astype(pd.CategoricalDtype(categories=event_types)))
     df = pd.concat([df, type_one_hot], axis=1)
     return df
 
@@ -214,7 +214,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     except FileExistsError:
         pass
 
-    for file in nice_list2[:5]:  # os.listdir(repo_dirs):
+    for file in os.listdir(repo_dirs):
         repo_holder = Repository()
         repo_holder.file = file
         try:
@@ -242,7 +242,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         cur_repo = add_type_one_hot_encoding(cur_repo)
         cur_repo = cur_repo.drop(["type"], axis=1)
         cur_repo = cur_repo.drop(["name"], axis=1)
-
+        cur_repo = cur_repo.drop(["Unnamed: 0"],axis=1)
         vulns = cur_repo.index[cur_repo['is_vuln'] > 0].tolist()
         if len(vulns) < 10:
             continue
