@@ -12,3 +12,5 @@ images/*
 /output.zip
 /results/*
 *.ipynb
+/ready_data/*
+.vscode/launch.json
