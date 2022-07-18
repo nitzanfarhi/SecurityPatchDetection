@@ -203,3 +203,8 @@ def run_query(query):
             raise Exception("Query failed to run by returning code of {}. {}".format(request.status_code, query))
 
 
+def safe_mkdir(dirname):
+    try:
+        os.mkdir(dirname)
+    except FileExistsError:
+        pass

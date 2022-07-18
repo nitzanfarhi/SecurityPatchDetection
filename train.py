@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 from classes import Repository
 
 import helper
-from helper import normalize, find_best_f1, find_best_accuracy, EnumAction
+from helper import normalize, find_best_f1, find_best_accuracy, EnumAction,safe_mkdir
 
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
@@ -209,10 +209,8 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     all_set = set()
 
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
-    try:
-        os.mkdir("ready_data/" + dirname)
-    except FileExistsError:
-        pass
+    safe_mkdir("ready_data")
+    safe_mkdir("ready_data/" + dirname)
 
     for file in os.listdir(repo_dirs):
         repo_holder = Repository()
@@ -425,6 +423,8 @@ def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs
     pyplot.xlabel('epoch')
     pyplot.legend(['train', 'val'], loc='upper left')
     pyplot.draw()
+
+    safe_mkdir("figs")
     pyplot.savefig(f"figs/{exp_name}_{epochs}.png")
 
     # Final evaluation of the model
