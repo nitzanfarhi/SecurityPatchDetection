@@ -126,7 +126,6 @@ def add_time_one_hot_encoding(df, with_idx=False):
 
 def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, backs=50, resample=24):
     """
-
     :param cur_repo_data: DataFrame that is processed
     :param event: list of events to get windows from
     :param aggr_options: can be before, after or none, to decide how we agregate
@@ -136,14 +135,15 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         amount of hours gathered as a single window (in addition to days)
     :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
     :param resample: is the data resampled and at what frequency (hours)
-    :return:
+    :return: a window for lstm
     """
-    befs = -1
+    befs = -10
     if aggr_options == Aggregate.after_cve:
+        cur_repo_data = cur_repo_data.reset_index().drop(["idx"], axis=1).set_index("created_at")
+        cur_repo_data = cur_repo_data.sort_index()
         starting_time = event[0] - timedelta(days=days, hours=hours)
         res = cur_repo_data[starting_time:event[0]]
         res = res.iloc[:befs, :]
-        res = res.reset_index().drop(["idx"], axis=1).set_index("created_at")
         new_row = pd.DataFrame([[0] * len(res.columns)], columns=res.columns, index=[starting_time])
         res = pd.concat([new_row, res], ignore_index=False)
         res = res.resample(f'{resample}H').sum()
@@ -222,6 +222,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         except pd.errors.EmptyDataError:
             continue
 
+        cur_repo = cur_repo.sort_index()
         cur_repo = cur_repo[cur_repo["created_at"].notnull()]
         all_set.update(cur_repo.type.unique())
         cur_repo['idx'] = range(len(cur_repo))
@@ -276,7 +277,6 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             repo_holder.benign_lst.append(res)
             repo_holder.benign_details.append(details)
 
-        repo_holder.benign_lst
         repo_holder.pad_repo()
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
@@ -308,7 +308,6 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     """
 
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
-
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
         logging.info(f"Loading Dataset {dirname}")
         all_repos = []
@@ -518,8 +517,7 @@ def parse_args():
     parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
     parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data", action="store_const", dest="cache",
-                        const=True)
+    parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data", action="store_const", dest="cache",  const=True)
     parser.add_argument('-e', '--epochs', type=int, default=10, help=' using none aggregation, operations back')
     parser.add_argument('-f', '--find-fp', help="Find False positive commits", action="store_const",
                         dest="fp", const=True)
@@ -552,6 +550,10 @@ def main():
                                           days=args.days,
                                           backs=args.backs,
                                           cache=args.cache)
+
+    to_pad = max([x.get_all_lst()[0].shape[1] for x in all_repos])
+    for repo in all_repos:
+        repo.pad_repo(to_pad)
 
     train_size = int(0.7 * len(all_repos))
     validation_size = int(0.15 * len(all_repos))

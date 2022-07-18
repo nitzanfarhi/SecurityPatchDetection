@@ -10,10 +10,11 @@ class Repository:
         self.benign_details = []
         self.file = ""
 
-    def pad_repo(self):
+    def pad_repo(self,to_pad=None):
         padded_vuln_all, padded_benign_all = [], []
-        to_pad = max(max(Counter([v.shape[0] for v in self.vuln_lst])),
-                     max(Counter([v.shape[0] for v in self.benign_lst])))
+        if to_pad is None:
+            to_pad = max(max(Counter([v.shape[0] for v in self.vuln_lst])),
+                         max(Counter([v.shape[0] for v in self.benign_lst])))
 
         for vuln in self.vuln_lst:
             padded_vuln_all.append(np.pad(vuln, ((to_pad - vuln.shape[0], 0), (0, 0))))
