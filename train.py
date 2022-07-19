@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 from classes import Repository
 
 import helper
-from helper import normalize, find_best_f1, find_best_accuracy, EnumAction,safe_mkdir
+from helper import normalize, find_best_f1, find_best_accuracy, EnumAction, safe_mkdir, timing
 
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
@@ -36,7 +36,6 @@ from numpy import std
 from numpy import dstack
 from pandas import read_csv
 from matplotlib import pyplot
-
 
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
@@ -55,7 +54,8 @@ def find_benign_events(cur_repo_data, gap_days, num_of_events):
             if counter >= retries:
                 return benign_events
             try:
-                cur_event = random.randint(2 * gap_days + 1, cur_repo_data.shape[0] - gap_days * 2 - 1)
+                cur_event = random.randint(
+                    2 * gap_days + 1, cur_repo_data.shape[0] - gap_days * 2 - 1)
             except ValueError:
                 counter += 1
                 continue
@@ -90,7 +90,8 @@ def create_all_events(cur_repo_data, gap_days):
     return all_events, labels
 
 
-event_types = ['PullRequestEvent', 'PushEvent', 'ReleaseEvent', 'DeleteEvent', 'issues', 'CreateEvent', 'releases', 'IssuesEvent', 'ForkEvent', 'WatchEvent', 'PullRequestReviewCommentEvent', 'stargazers', 'pullRequests', 'commits', 'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent', 'forks', 'PullRequestReviewEvent', 'PublicEvent', 'VulnEvent']
+event_types = ['PullRequestEvent', 'PushEvent', 'ReleaseEvent', 'DeleteEvent', 'issues', 'CreateEvent', 'releases', 'IssuesEvent', 'ForkEvent', 'WatchEvent', 'PullRequestReviewCommentEvent',
+               'stargazers', 'pullRequests', 'commits', 'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent', 'forks', 'PullRequestReviewEvent', 'PublicEvent', 'VulnEvent']
 
 
 def add_type_one_hot_encoding(df):
@@ -98,7 +99,8 @@ def add_type_one_hot_encoding(df):
     :param df: dataframe to add type one hot encoding to
     :return: dataframe with type one hot encoding
     """
-    type_one_hot = pd.get_dummies(df.type.astype(pd.CategoricalDtype(categories=event_types)))
+    type_one_hot = pd.get_dummies(df.type.astype(
+        pd.CategoricalDtype(categories=event_types)))
     df = pd.concat([df, type_one_hot], axis=1)
     return df
 
@@ -137,21 +139,23 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     :param resample: is the data resampled and at what frequency (hours)
     :return: a window for lstm
     """
-    befs = -10
+    befs = -1
     if aggr_options == Aggregate.after_cve:
-        cur_repo_data = cur_repo_data.reset_index().drop(["idx"], axis=1).set_index("created_at")
+        cur_repo_data = cur_repo_data.reset_index().drop(
+            ["idx"], axis=1).set_index("created_at")
         cur_repo_data = cur_repo_data.sort_index()
         starting_time = event[0] - timedelta(days=days, hours=hours)
         res = cur_repo_data[starting_time:event[0]]
         res = res.iloc[:befs, :]
-        new_row = pd.DataFrame([[0] * len(res.columns)], columns=res.columns, index=[starting_time])
+        new_row = pd.DataFrame([[0] * len(res.columns)],
+                               columns=res.columns, index=[starting_time])
         res = pd.concat([new_row, res], ignore_index=False)
         res = res.resample(f'{resample}H').sum()
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
-              event[1] - backs:event[1] + befs]
+            event[1] - backs:event[1] + befs]
     return res.values
 
 
@@ -194,6 +198,7 @@ class Aggregate(Enum):
     before_cve = "before"
     after_cve = "after"
 
+
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
     """
 
@@ -207,47 +212,34 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     """
     all_repos = []
     all_set = set()
-
-    dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+    ignored = []
+    dirname = make_new_dir_name(
+        aggr_options, backs, benign_vuln_ratio, days, hours, resample)
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
 
-    for file in os.listdir(repo_dirs):
+    for file in (pbar :=tqdm.tqdm(os.listdir(repo_dirs))):
         repo_holder = Repository()
         repo_holder.file = file
         try:
-            cur_repo = pd.read_csv(repo_dirs + "/" + file, parse_dates=['created_at'])
+            cur_repo = pd.read_csv(
+                repo_dirs + "/" + file, parse_dates=['created_at'])
         except pd.errors.EmptyDataError:
             continue
 
-        cur_repo = cur_repo.sort_index()
-        cur_repo = cur_repo[cur_repo["created_at"].notnull()]
-        all_set.update(cur_repo.type.unique())
-        cur_repo['idx'] = range(len(cur_repo))
-        cur_repo = cur_repo.set_index(["created_at", "idx"])
         if cur_repo.shape[0] < 100:
+            ignored.append(file)
             continue
 
-        # cur_repo = cur_repo[cur_repo.index.notnull()]
-        for commit_change in ["additions", "deletions"]:
-            cur_repo[commit_change].fillna(0, inplace=True)
-            cur_repo[commit_change] = cur_repo[commit_change].astype(int)
-            cur_repo[commit_change] = (cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
+        number_of_vulns = cur_repo[cur_repo["type"] == "VulnEvent"].shape[0] 
+        if number_of_vulns <10:
+            ignored.append(file)
+            continue
 
-
-
-        cur_repo["is_vuln"] = cur_repo.type.apply(lambda x: 1 if x == "VulnEvent" else 0)
-
-        cur_repo = add_type_one_hot_encoding(cur_repo)
-        cur_repo = cur_repo.drop(["type"], axis=1)
-        cur_repo = cur_repo.drop(["name"], axis=1)
-        cur_repo = cur_repo.drop(["Unnamed: 0"],axis=1)
+        pbar.set_description(f"{file},{number_of_vulns} ")
+        
+        cur_repo = fix_repo_shape(all_set, cur_repo)
         vulns = cur_repo.index[cur_repo['is_vuln'] > 0].tolist()
-        if len(vulns) < 10:
-            continue
-
-        print(file, ",", len(vulns))
-
         benigns = cur_repo.index[cur_repo['is_vuln'] == 0].tolist()
         random.shuffle(benigns)
 
@@ -258,29 +250,91 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
-        for vuln in tqdm.tqdm(vulns, desc=file + " vuln", leave=False):
-            res = get_event_window(cur_repo, vuln, aggr_options, days=days, hours=hours, backs=backs,
-                                   resample=resample)
-            tag = 1
-            details = (file, vuln, tag)
-            repo_holder.vuln_lst.append(res)
-            repo_holder.vuln_details.append(details)
+        extract_vuln(aggr_options, hours, days, resample,
+                     backs, file, repo_holder, cur_repo, vulns)
 
-        for benign in tqdm.tqdm(benigns[:benign_vuln_ratio*len(vulns)], file + " benign", leave=False):
-
-            res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
-                                   resample=resample)
-            tag = 0
-            details = (file, benign, tag)
-            repo_holder.benign_lst.append(res)
-            repo_holder.benign_details.append(details)
+        extract_benigns(aggr_options, benign_vuln_ratio, hours, days,
+                        resample, backs, file, repo_holder, cur_repo, vulns, benigns)
 
         repo_holder.pad_repo()
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
+            
         all_repos.append(repo_holder)
-    print(all_set)
+
+
+    print(ignored)
     return all_repos
+
+
+def extract_vuln(aggr_options, hours, days, resample, backs, file, repo_holder, cur_repo, vulns):
+    """
+    :param aggr_options: can be before, after or none, to decide how we agregate
+    :param hours: if 'before' or 'after' is choosed as aggr_options
+    :param days:    if 'before' or 'after' is choosed as aggr_options
+    :param resample: is the data resampled and at what frequency (hours)
+    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
+    :param file: the file name
+    :param repo_holder: the repository holder
+    :param cur_repo: the current repo
+    :param vulns: the vulns
+    :return:
+    """
+    for vuln in vulns:
+        res = get_event_window(cur_repo, vuln, aggr_options, days=days, hours=hours, backs=backs,
+                               resample=resample)
+        tag = 1
+        details = (file, vuln, tag)
+        repo_holder.vuln_lst.append(res)
+        repo_holder.vuln_details.append(details)
+
+
+def extract_benigns(aggr_options, benign_vuln_ratio, hours, days, resample, backs, file, repo_holder, cur_repo, vulns, benigns):
+    """
+    :param aggr_options: can be before, after or none, to decide how we agregate
+    :param benign_vuln_ratio: ratio of benign to vuln
+    :param hours: if 'before' or 'after' is choosed as aggr_options
+    :param days:    if 'before' or 'after' is choosed as aggr_options
+    :param resample: is the data resampled and at what frequency (hours)
+    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
+    :param file: the file name
+    :param repo_holder: the repository holder
+    :param cur_repo: the current repo
+    :param vulns: the vulns
+    :param benigns: the benigns
+    :return:
+    """
+    for benign in benigns[:benign_vuln_ratio*len(vulns)]:
+        res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
+                               resample=resample)
+        tag = 0
+        details = (file, benign, tag)
+        repo_holder.benign_lst.append(res)
+        repo_holder.benign_details.append(details)
+
+
+def fix_repo_shape(all_set, cur_repo):
+    cur_repo = cur_repo.sort_index()
+    cur_repo = cur_repo[cur_repo["created_at"].notnull()]
+    all_set.update(cur_repo.type.unique())
+    cur_repo['idx'] = range(len(cur_repo))
+    cur_repo = cur_repo.set_index(["created_at", "idx"])
+
+    # cur_repo = cur_repo[cur_repo.index.notnull()]
+    for commit_change in ["additions", "deletions"]:
+        cur_repo[commit_change].fillna(0, inplace=True)
+        cur_repo[commit_change] = cur_repo[commit_change].astype(int)
+        cur_repo[commit_change] = (
+            cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
+
+    cur_repo["is_vuln"] = cur_repo.type.apply(
+        lambda x: 1 if x == "VulnEvent" else 0)
+
+    cur_repo = add_type_one_hot_encoding(cur_repo)
+    cur_repo = cur_repo.drop(["type"], axis=1)
+    cur_repo = cur_repo.drop(["name"], axis=1)
+    cur_repo = cur_repo.drop(["Unnamed: 0"], axis=1)
+    return cur_repo
 
 
 def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
@@ -305,7 +359,8 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     :return: a list of Repository objects and dir name
     """
 
-    dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+    dirname = make_new_dir_name(
+        aggr_options, backs, benign_vuln_ratio, days, hours, resample)
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
         logging.info(f"Loading Dataset {dirname}")
         all_repos = []
@@ -316,12 +371,13 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
 
     else:
         logging.info(f"Creating Dataset {dirname}")
-        all_repos = create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs)
+        all_repos = create_dataset(
+            aggr_options, benign_vuln_ratio, hours, days, resample, backs)
 
     return all_repos, dirname
 
 
-def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs=20, fp=False):
+def evaluate_data(X_train, y_train, X_val, y_val, X_test, y_test, exp_name, epochs=20, fp=False):
 
     import tensorflow as tf
 
@@ -337,7 +393,6 @@ def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs
     from tensorflow.keras import Input, layers
     from tensorflow.keras.callbacks import EarlyStopping
 
-
     """
     Evaluate the model with the given data.
     """
@@ -350,7 +405,8 @@ def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs
     used_y_test = np.asarray(y_test).astype('float32')
 
     model1 = Sequential()
-    model1.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model1.add(Conv1D(filters=64, kernel_size=2, activation='relu',
+               input_shape=(X_train.shape[1], X_train.shape[2])))
     model1.add(MaxPooling1D(pool_size=2))
     model1.add(Flatten())
     model1.add(Dense(100, activation='relu'))
@@ -363,11 +419,13 @@ def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs
     model1.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
                    metrics=['accuracy'])
 
-    reshaped_train, reshaped_test = X_train.reshape(X_train.shape[0], -1), X_test.reshape(X_test.shape[0], -1)
+    reshaped_train, reshaped_test = X_train.reshape(
+        X_train.shape[0], -1), X_test.reshape(X_test.shape[0], -1)
 
     # define model
     model2 = Sequential()
-    model2.add(Conv1D(filters=500, kernel_size=2, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model2.add(Conv1D(filters=500, kernel_size=2, activation='relu',
+               input_shape=(X_train.shape[1], X_train.shape[2])))
     model2.add(Dropout(0.1))
     model2.add(MaxPooling1D(pool_size=2))
     model2.add(Dropout(0.1))
@@ -397,14 +455,16 @@ def evaluate_data(X_train, y_train,X_val,y_val, X_test, y_test, exp_name, epochs
                    metrics=['accuracy'])
 
     model4 = Sequential()
-    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu',
+               input_shape=(X_train.shape[1], X_train.shape[2])))
     model4.add(Conv1D(filters=64, kernel_size=3, activation='relu'))
     model4.add(Dropout(0.5))
     model4.add(MaxPooling1D(pool_size=2))
     model4.add(Flatten())
     model4.add(Dense(100, activation='relu'))
     model4.add(Dense(1, activation='sigmoid'))
-    model4.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    model4.compile(loss='binary_crossentropy',
+                   optimizer='adam', metrics=['accuracy'])
 
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=50)
 
@@ -448,7 +508,8 @@ def acquire_commits(name, date):
                                                 repo,
                                                 branch,
                                                 date.strftime(github_format),
-                                                (date + timedelta(days=1)).strftime(github_format)
+                                                (date + timedelta(days=1)
+                                                 ).strftime(github_format)
                                                 ))
         if "data" in res:
             if "repository" in res["data"]:
@@ -484,7 +545,8 @@ def check_results(X_test, y_test, pred, model, exp_name, fp=False):
     plt.figure()
     lw = 2
 
-    plt.plot(fpr['micro'], tpr['micro'], color="darkorange", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc['micro'])
+    plt.plot(fpr['micro'], tpr['micro'], color="darkorange", lw=lw,
+             label="ROC curve (area = %0.2f)" % roc_auc['micro'])
     plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
@@ -498,7 +560,8 @@ def check_results(X_test, y_test, pred, model, exp_name, fp=False):
         real = y_test[:, 2]
         date = y_test[:, 1]
         name = y_test[:, 0]
-        df = DataFrame(zip(real, pred, date, name), columns=['real', 'pred', 'date', 'name'])
+        df = DataFrame(zip(real, pred, date, name), columns=[
+                       'real', 'pred', 'date', 'name'])
         fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
         for index, row in tqdm.tqdm(list(fps.iterrows())):
             with open(f'output/{row["name"]}_{row["date"][0].strftime("%Y-%m-%d")}_{str(row["date"][1])}.json',
@@ -512,13 +575,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--hours', type=int, default=0, help='hours back')
     parser.add_argument('-d', '--days', type=int, default=10, help='days back')
-    parser.add_argument('--resample', type=int, default=24, help='number of hours that should resample aggregate')
-    parser.add_argument('-r', '--ratio', type=int, default=1, help='benign vuln ratio')
-    parser.add_argument('-a', '--aggr', type=Aggregate, action=EnumAction, default=Aggregate.none)
-    parser.add_argument('-b', '--backs', type=int, default=10, help=' using none aggregation, operations back')
-    parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data", action="store_const", dest="cache",  const=True)
-    parser.add_argument('-e', '--epochs', type=int, default=10, help=' using none aggregation, operations back')
+    parser.add_argument('--resample', type=int, default=24,
+                        help='number of hours that should resample aggregate')
+    parser.add_argument('-r', '--ratio', type=int,
+                        default=1, help='benign vuln ratio')
+    parser.add_argument('-a', '--aggr', type=Aggregate,
+                        action=EnumAction, default=Aggregate.none)
+    parser.add_argument('-b', '--backs', type=int, default=10,
+                        help=' using none aggregation, operations back')
+    parser.add_argument('-v', '--verbose', help="Be verbose",
+                        action="store_const", dest="loglevel", const=logging.INFO)
+    parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data",
+                        action="store_const", dest="cache",  const=True)
+    parser.add_argument('-e', '--epochs', type=int, default=10,
+                        help=' using none aggregation, operations back')
     parser.add_argument('-f', '--find-fp', help="Find False positive commits", action="store_const",
                         dest="fp", const=True)
 
@@ -567,7 +637,8 @@ def main():
     X_val, y_val = split_into_x_and_y(validation_repos)
     X_test, y_test = split_into_x_and_y(test_repos)
 
-    res = evaluate_data(X_train, y_train, X_val,y_val, X_test, y_test, exp_name, epochs=args.epochs, fp=args.fp)
+    res = evaluate_data(X_train, y_train, X_val, y_val, X_test,
+                        y_test, exp_name, epochs=args.epochs, fp=args.fp)
     print(res)
 
 

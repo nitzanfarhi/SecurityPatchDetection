@@ -1,6 +1,8 @@
 from collections import Counter
 import numpy as np
 
+from helper import timing
+
 
 class Repository:
     def __init__(self):

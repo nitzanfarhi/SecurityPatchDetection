@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 from numpy import array
 from sklearn.metrics import precision_recall_fscore_support as f_score
 from sklearn.metrics import accuracy_score as a_score
-
+import os
 import argparse
 import enum
 
@@ -208,3 +208,16 @@ def safe_mkdir(dirname):
         os.mkdir(dirname)
     except FileExistsError:
         pass
+
+from functools import wraps
+from time import time
+
+def timing(f):
+    @wraps(f)
+    def wrap(*args, **kw):
+        ts = time()
+        result = f(*args, **kw)
+        te = time()
+        print('func:%r took: %2.4f sec' % (f.__name__, te-ts))
+        return result
+    return wrap
