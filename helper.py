@@ -177,7 +177,7 @@ commits_between_dates = """
 
 """
 
-def run_query(query):
+def run_query(query,ignore_errors=False):
     counter = 0;
     while True:
         request = requests.post('https://api.github.com/graphql', json={'query': query}, headers=headers)
@@ -200,7 +200,12 @@ def run_query(query):
                     continue
                 break
 
-            raise Exception("Query failed to run by returning code of {}. {}".format(request.status_code, query))
+            err_string = "Query failed to run by returning code of {}. {}".format(request.status_code, query)
+            if ignore_errors:
+                print(err_string)
+            else:
+                raise Exception(err_string)
+
 
 
 def safe_mkdir(dirname):

@@ -31,3 +31,9 @@ class Repository:
         X = np.concatenate([self.vuln_lst,self.benign_lst])
         y = len(self.vuln_lst) * [1] + len(self.benign_lst)*[0]
         return X, y
+
+    def get_num_of_vuln(self):
+        return len(self.vuln_lst)
+
+    def get_all_details(self):
+        return np.concatenate([self.vuln_details,self.benign_details])
