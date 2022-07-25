@@ -145,6 +145,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     :return: a window for lstm
     """
     befs = -1
+
     if aggr_options == Aggregate.after_cve:
         cur_repo_data = cur_repo_data.reset_index().drop(
             ["idx"], axis=1).set_index("created_at")
@@ -228,10 +229,13 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
 
+    counter = 0
     for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
 
         if file in less_than_10_vulns:
             continue
+        counter += 1
+
         repo_holder = Repository()
         repo_holder.file = file
         try:
@@ -360,7 +364,7 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
     :return: name of the directory to save the data in
     """
     name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
-    print(name_template)
+    logging.debug(name_template)
     return name_template
 
 
@@ -518,13 +522,13 @@ def check_results(X_test, y_test, pred, model, exp_name):
     used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
-    print(max_f1, thresh)
+    logging.debug(max_f1, thresh)
     with open(f"results/{exp_name}.txt", 'w') as mfile:
         mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
         mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
 
-        print('Accuracy: %.2f%%' % (scores[1] * 100))
-        print('fscore: %.2f%%' % (max_f1 * 100))
+        logging.critical('Accuracy: %.2f%%' % (scores[1] * 100))
+        logging.critical('fscore: %.2f%%' % (max_f1 * 100))
 
     fpr = dict()
     tpr = dict()
@@ -585,11 +589,13 @@ def split_into_x_and_y(repos, with_details=False):
             details.append(repo.get_all_details())
         X_train.append(x)
         y_train.append(y)
-    X_train = np.concatenate(X_train)
-    y_train = np.concatenate(y_train)
+    if X_train:
+        X_train = np.concatenate(X_train)
+        y_train = np.concatenate(y_train)
 
     if with_details:
-        details = np.concatenate(details)
+        if details:
+            details = np.concatenate(details)
         return X_train, y_train, details
 
     return X_train, y_train
@@ -597,7 +603,6 @@ def split_into_x_and_y(repos, with_details=False):
 def init():
     random.seed(0x1337)
     np.random.seed(0x1337)
-    tf.set_random_seed(0x1337)
 
 
 
@@ -625,51 +630,53 @@ def main():
             all_repos.remove(repo)
 
     train_size = int(0.7 * num_of_vulns)
-    validation_size = int(0.15 * num_of_vulns)
-    test_size = int(0.15 * num_of_vulns)
+    validation_size = int(0.3 * num_of_vulns)
+    test_size = num_of_vulns - train_size - validation_size
+    logging.info(f"Train size: {train_size}")
+    logging.info(f"Validation size: {validation_size}")
+    logging.info(f"Test size: {test_size}")
 
     train_repos = []
     validation_repos = []
     test_repos = []
 
     vuln_counter = 0
-    all_repos.shuffle()
+    random.shuffle(all_repos)
     for repo in all_repos:
         if(vuln_counter < train_size):
-            print(f"Train - {repo.file}")
+            logging.debug(f"Train - {repo.file}")
             train_repos.append(repo)
         elif(vuln_counter < train_size + validation_size):
-            print(f"Val - {repo.file}")
+            logging.debug(f"Val - {repo.file}")
             validation_repos.append(repo)
         else:
-            print(f"Test - {repo.file}")
+            logging.debug(f"Test - {repo.file}")
             test_repos.append(repo)
         vuln_counter += repo.get_num_of_vuln()
     
-
     X_train, y_train = split_into_x_and_y(train_repos)
-    X_val, y_val, details = split_into_x_and_y(validation_repos, with_details=True)
-    X_test, y_test, details = split_into_x_and_y(test_repos, with_details=True)
+    X_val, y_val, val_details = split_into_x_and_y(validation_repos, with_details=True)
+    X_test, y_test, test_details = split_into_x_and_y(test_repos, with_details=True)
 
     model = evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=args.epochs)
 
-    pred = model.predict(X_test).reshape(-1)
+    pred = model.predict(X_val).reshape(-1)
 
-    accuracy = check_results(X_test, y_test, pred, model, exp_name)
+    # _ = check_results(X_test, y_test, pred, model, exp_name)
 
 
     if args.fp:
         safe_mkdir("output")
         safe_mkdir(f"output/{exp_name}")
 
-        df = DataFrame(zip(y_test, pred,details[:,0],details[:,1]), columns=[
+        df = DataFrame(zip(y_val, pred,val_details[:,0],val_details[:,1]), columns=[
                        'real', 'pred', 'file', 'timestamp'])
         fps = df[((df['pred'] > df['real']) & (df['pred'] > 0.5))]
         for _, row in tqdm.tqdm(list(fps.iterrows())):
-            with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
+            commits = acquire_commits(row["file"], row["timestamp"][0], ignore_errors=True)
+            if commits:
+                with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
                       'w+') as mfile:
-                commits = acquire_commits(row["file"], row["timestamp"][0], ignore_errors=True)
-                if commits:
                     json.dump(commits, mfile, indent=4, sort_keys=True)
 
 
