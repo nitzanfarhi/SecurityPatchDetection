@@ -1,45 +1,39 @@
 #!/usr/bin/env python
 # coding: utf-8
+from tensorflow.keras.callbacks import EarlyStopping
+from models import conv1d, conv1d_more_layers, lstm, small_conv1d
+from sklearn.metrics import roc_curve, auc
+from helper import find_best_f1, EnumAction, safe_mkdir
+from classes import Repository
+from matplotlib import pyplot as plt
+from matplotlib import pyplot
+from enum import Enum
+from pandas import DataFrame
+import helper
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import argparse
+import matplotlib
+import datetime
+import random
+import tqdm
+import pickle
 import json
 import os
 import logging
-import pickle
-import tqdm
-import random
-import datetime
 
-import matplotlib
-import argparse
-import tensorflow as tf
-import pandas as pd
-import numpy as np
-import helper
-
-from dateutil import parser
-from pandas import DataFrame
-from enum import Enum
-from matplotlib import pyplot
-from matplotlib import pyplot as plt
-
-from classes import Repository
-
-from helper import find_best_f1, EnumAction, safe_mkdir
-from sklearn.metrics import roc_curve, auc
-
-from tensorflow.keras.layers import Dense, LSTM, GRU
-from tensorflow.keras.optimizers import SGD
-from tensorflow.keras import Sequential
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.layers import Flatten
-from tensorflow.keras.layers import Dropout
-from tensorflow.keras.layers import Conv1D
-from tensorflow.keras.layers import MaxPooling1D
-from tensorflow.keras import Input, layers
-from tensorflow.keras.callbacks import EarlyStopping
+import coloredlogs
+import logging
+logger = logging.getLogger(__name__)
+coloredlogs.install(fmt='%(asctime)s %(levelname)s %(message)s')
 
 
 matplotlib.use('Agg')
+
+
+BENIGN_TAG = 0
+VULN_TAG = 1
 
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
@@ -145,14 +139,15 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     :return: a window for lstm
     """
     befs = -1
+    hours_befs = 2
 
     if aggr_options == Aggregate.after_cve:
         cur_repo_data = cur_repo_data.reset_index().drop(
             ["idx"], axis=1).set_index("created_at")
         cur_repo_data = cur_repo_data.sort_index()
-        starting_time = event[0] - datetime.timedelta(days=days, hours=hours)
-        res = cur_repo_data[starting_time:event[0]]
-        res = res.iloc[:befs, :]
+        indicator = event[0]  - datetime.timedelta(days=0, hours=hours_befs)
+        starting_time = indicator - datetime.timedelta(days=days, hours=hours)
+        res = cur_repo_data[starting_time:indicator]
         new_row = pd.DataFrame([[0] * len(res.columns)],
                                columns=res.columns, index=[starting_time])
         res = pd.concat([new_row, res], ignore_index=False)
@@ -208,6 +203,7 @@ class Aggregate(Enum):
     none = "none"
     before_cve = "before"
     after_cve = "after"
+    
 
 
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
@@ -261,12 +257,15 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         vulns = cur_repo.index[cur_repo['is_vuln'] > 0].tolist()
         benigns = cur_repo.index[cur_repo['is_vuln'] == 0].tolist()
         ignore_dates = set([vuln[0].date() for vuln in vulns])
-        ignore_dates |= set(datetime.timedelta(days=1)+date for date in ignore_dates)
-        ignore_dates |= set(datetime.timedelta(days=-1)+date for date in ignore_dates)
-        not_near_vulns = cur_repo[cur_repo.index.to_series().apply(lambda row: row[0].date() not in ignore_dates)]
+        ignore_dates |= set(datetime.timedelta(days=1) +
+                            date for date in ignore_dates)
+        ignore_dates |= set(datetime.timedelta(days=-1) +
+                            date for date in ignore_dates)
+        not_near_vulns = cur_repo[cur_repo.index.to_series().apply(
+            lambda row: row[0].date() not in ignore_dates)]
         benigns = not_near_vulns.index[not_near_vulns['is_vuln'] == 0].tolist()
         random.shuffle(benigns)
-
+        benigns = benigns[:benign_vuln_ratio*len(vulns)]
         cols_at_end = ['is_vuln']
         cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
                             + [c for c in cols_at_end if c in cur_repo]]
@@ -274,11 +273,10 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
-        extract_vuln(aggr_options, hours, days, resample,
-                     backs, file, repo_holder, cur_repo, vulns)
-
-        extract_benigns(aggr_options, benign_vuln_ratio, hours, days,
-                        resample, backs, file, repo_holder, cur_repo, vulns, benigns)
+        extract_window(aggr_options, hours, days, resample, backs,
+                       file, repo_holder.vuln_lst,repo_holder.vuln_details, cur_repo, vulns, VULN_TAG)
+        extract_window(aggr_options, hours, days, resample, backs,
+                       file, repo_holder.benign_lst,repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
 
         repo_holder.pad_repo()
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
@@ -289,50 +287,29 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     return all_repos
 
 
-def extract_vuln(aggr_options, hours, days, resample, backs, file, repo_holder, cur_repo, vulns):
+
+
+def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,details_lst, cur_repo, cur_list, tag):
     """
+    pulls out a window of events from the repo
     :param aggr_options: can be before, after or none, to decide how we agregate
     :param hours: if 'before' or 'after' is choosed as aggr_options
     :param days:    if 'before' or 'after' is choosed as aggr_options
     :param resample: is the data resampled and at what frequency (hours)
     :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
     :param file: the file name
-    :param repo_holder: the repository holder
+    :param repo_holder: the repo holder
     :param cur_repo: the current repo
-    :param vulns: the vulns
-    :return:
+    :param cur_list: the current list of events
+    :param tag: the tag to add to the window
+    :return: None
     """
-    for vuln in vulns:
-        res = get_event_window(cur_repo, vuln, aggr_options, days=days, hours=hours, backs=backs,
-                               resample=resample)
-        tag = 1
-        details = (file, vuln, tag)
-        repo_holder.vuln_lst.append(res)
-        repo_holder.vuln_details.append(details)
-
-
-def extract_benigns(aggr_options, benign_vuln_ratio, hours, days, resample, backs, file, repo_holder, cur_repo, vulns, benigns):
-    """
-    :param aggr_options: can be before, after or none, to decide how we agregate
-    :param benign_vuln_ratio: ratio of benign to vuln
-    :param hours: if 'before' or 'after' is choosed as aggr_options
-    :param days:    if 'before' or 'after' is choosed as aggr_options
-    :param resample: is the data resampled and at what frequency (hours)
-    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
-    :param file: the file name
-    :param repo_holder: the repository holder
-    :param cur_repo: the current repo
-    :param vulns: the vulns
-    :param benigns: the benigns
-    :return:
-    """
-    for benign in benigns[:benign_vuln_ratio*len(vulns)]:
-        res = get_event_window(cur_repo, benign, aggr_options, days=days, hours=hours, backs=backs,
-                               resample=resample)
-        tag = 0
-        details = (file, benign, tag)
-        repo_holder.benign_lst.append(res)
-        repo_holder.benign_details.append(details)
+    for cur in cur_list:
+        res = get_event_window(cur_repo, cur, aggr_options,
+                               days=days, hours=hours, backs=backs, resample=resample)
+        details = (file, cur, tag)
+        window_lst.append(res)
+        details_lst.append(details)
 
 
 def fix_repo_shape(all_set, cur_repo):
@@ -404,64 +381,14 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20):
     Evaluate the model with the given data.
     """
 
-    model1 = Sequential()
-    model1.add(Conv1D(filters=64, kernel_size=2, activation='relu',
-               input_shape=(X_train.shape[1], X_train.shape[2])))
-    model1.add(MaxPooling1D(pool_size=2))
-    model1.add(Flatten())
-    model1.add(Dense(100, activation='relu'))
-    model1.add(Dropout(0.50))
-    model1.add(Dense(50, activation='relu'))
-    model1.add(Dropout(0.50))
-    model1.add(Dense(25, activation='relu'))
-    model1.add(Dropout(0.50))
-    model1.add(Dense(1, activation='sigmoid'))
-    model1.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                   metrics=['accuracy'])
+    model1 = conv1d(X_train.shape[1], X_train.shape[2])
 
     # define model
-    model2 = Sequential()
-    model2.add(Conv1D(filters=500, kernel_size=2, activation='relu',
-               input_shape=(X_train.shape[1], X_train.shape[2])))
-    model2.add(Dropout(0.1))
-    model2.add(MaxPooling1D(pool_size=2))
-    model2.add(Dropout(0.1))
-    model2.add(Flatten())
-    model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(100, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(70, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(50, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(30, activation='relu'))
-    model2.add(Dropout(0.1))
-    model2.add(Dense(1, activation='sigmoid'))
-    model2.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.1),
-                   metrics=['accuracy'])
+    model2 = conv1d_more_layers(X_train.shape[1], X_train.shape[2])
 
-    model3 = Sequential()
-    model3.add(LSTM(units=100, activation='relu', name='first_lstm', recurrent_dropout=0.1,
-                    input_shape=(X_train.shape[1], X_train.shape[2])))
-    model3.add(Dense(1, activation="sigmoid"))
+    model3 = lstm(X_train.shape[1], X_train.shape[2])
 
-    model3.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                   metrics=['accuracy'])
-
-    model4 = Sequential()
-    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu',
-               input_shape=(X_train.shape[1], X_train.shape[2])))
-    model4.add(Conv1D(filters=64, kernel_size=3, activation='relu'))
-    model4.add(Dropout(0.5))
-    model4.add(MaxPooling1D(pool_size=2))
-    model4.add(Flatten())
-    model4.add(Dense(100, activation='relu'))
-    model4.add(Dense(1, activation='sigmoid'))
-    model4.compile(loss='binary_crossentropy',
-                   optimizer='adam', metrics=['accuracy'])
+    model4 = small_conv1d(X_train.shape[1], X_train.shape[2])
 
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=20)
 
@@ -469,10 +396,11 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20):
     if logging.INFO <= logging.root.level:
         verbose = 1
 
-    model = model4
+    model = model1
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True,
                         validation_data=(X_val, y_val), callbacks=[es])
 
+    model_name = f'{model=}'.split('=')[0]
     pyplot.plot(history.history['accuracy'])
     pyplot.plot(history.history['val_accuracy'])
     pyplot.title('model accuracy')
@@ -482,13 +410,13 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20):
     pyplot.draw()
 
     safe_mkdir("figs")
-    pyplot.savefig(f"figs/{exp_name}_{epochs}.png")
+    pyplot.savefig(f"figs/{exp_name}_{epochs}_{model_name}.png")
 
     # Final evaluation of the model
     return model
 
 
-def acquire_commits(name, date, ignore_errors = False):
+def acquire_commits(name, date, ignore_errors=False):
     """
     Acquire the commits for the given repository.
     """
@@ -521,9 +449,10 @@ def check_results(X_test, y_test, pred, model, exp_name):
     """
     used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
+    model_name = f'{model=}'.split('=')[0]
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
     logging.debug(max_f1, thresh)
-    with open(f"results/{exp_name}.txt", 'w') as mfile:
+    with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
         mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
         mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
 
@@ -600,10 +529,13 @@ def split_into_x_and_y(repos, with_details=False):
 
     return X_train, y_train
 
-def init():
-    random.seed(0x1337)
-    np.random.seed(0x1337)
 
+def init():
+    SEED = 42
+    random.seed(SEED)
+    np.random.seed(SEED)
+    tf.random.set_seed(SEED)
+    os.environ['PYTHONHASHSEED'] = '0'
 
 
 def main():
@@ -629,9 +561,12 @@ def main():
         else:
             all_repos.remove(repo)
 
-    train_size = int(0.7 * num_of_vulns)
-    validation_size = int(0.3 * num_of_vulns)
+    TRAIN_SIZE = 0.8
+    VALIDATION_SIZE = 0.10
+    train_size = int(TRAIN_SIZE * num_of_vulns)
+    validation_size = int(VALIDATION_SIZE * num_of_vulns)
     test_size = num_of_vulns - train_size - validation_size
+
     logging.info(f"Train size: {train_size}")
     logging.info(f"Validation size: {validation_size}")
     logging.info(f"Test size: {test_size}")
@@ -653,30 +588,52 @@ def main():
             logging.debug(f"Test - {repo.file}")
             test_repos.append(repo)
         vuln_counter += repo.get_num_of_vuln()
-    
+
     X_train, y_train = split_into_x_and_y(train_repos)
-    X_val, y_val, val_details = split_into_x_and_y(validation_repos, with_details=True)
-    X_test, y_test, test_details = split_into_x_and_y(test_repos, with_details=True)
+    X_val, y_val, val_details = split_into_x_and_y(
+        validation_repos, with_details=True)
+    X_test, y_test, test_details = split_into_x_and_y(
+        test_repos, with_details=True)
 
-    model = evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=args.epochs)
+    model = evaluate_data(X_train, y_train, X_val, y_val,
+                          exp_name, epochs=args.epochs)
 
-    pred = model.predict(X_val).reshape(-1)
+    pred = model.predict(X_test).reshape(-1)
 
-    # _ = check_results(X_test, y_test, pred, model, exp_name)
-
+    _ = check_results(X_test, y_test, pred, model, exp_name)
 
     if args.fp:
         safe_mkdir("output")
         safe_mkdir(f"output/{exp_name}")
 
-        df = DataFrame(zip(y_val, pred,val_details[:,0],val_details[:,1]), columns=[
+        summary_md = ""
+        summary_md += f"# {exp_name}\n"
+
+        df = DataFrame(zip(y_test, pred, test_details[:, 0], test_details[:, 1]), columns=[
                        'real', 'pred', 'file', 'timestamp'])
+
         fps = df[((df['pred'] > df['real']) & (df['pred'] > 0.5))]
+
+        groups = fps.groupby('file')
+        for name, group in groups:
+            summary_md += f"## {name}\n"
+            summary_md += "\n".join(
+                list(group['timestamp'].apply(lambda x: "* " + str(x[0]))))
+            summary_md += "\n"
+
+        with open(f"output/{exp_name}/summary.md", "w") as f:
+            f.write(summary_md)
+
         for _, row in tqdm.tqdm(list(fps.iterrows())):
-            commits = acquire_commits(row["file"], row["timestamp"][0], ignore_errors=True)
+            if "tensorflow" in row["file"]:
+                logging.debug("Skipping over tf")
+
+                continue
+            commits = acquire_commits(
+                row["file"], row["timestamp"][0], ignore_errors=True)
             if commits:
                 with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
-                      'w+') as mfile:
+                          'w+') as mfile:
                     json.dump(commits, mfile, indent=4, sort_keys=True)
 
 
