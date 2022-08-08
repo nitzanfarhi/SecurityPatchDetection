@@ -89,7 +89,7 @@ def create_all_events(cur_repo_data, gap_days):
 
 
 event_types = ['PullRequestEvent', 'PushEvent', 'ReleaseEvent', 'DeleteEvent', 'issues', 'CreateEvent', 'releases', 'IssuesEvent', 'ForkEvent', 'WatchEvent', 'PullRequestReviewCommentEvent',
-               'stargazers', 'pullRequests', 'commits', 'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent', 'forks', 'PullRequestReviewEvent', 'PublicEvent', 'VulnEvent']
+               'stargazers', 'pullRequests', 'commits', 'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent', 'forks', 'PullRequestReviewEvent', 'PublicEvent']
 
 
 def add_type_one_hot_encoding(df):
@@ -145,7 +145,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         cur_repo_data = cur_repo_data.reset_index().drop(
             ["idx"], axis=1).set_index("created_at")
         cur_repo_data = cur_repo_data.sort_index()
-        indicator = event[0]  - datetime.timedelta(days=0, hours=hours_befs)
+        indicator = event[0] - datetime.timedelta(days=0, hours=hours_befs)
         starting_time = indicator - datetime.timedelta(days=days, hours=hours)
         res = cur_repo_data[starting_time:indicator]
         new_row = pd.DataFrame([[0] * len(res.columns)],
@@ -203,7 +203,6 @@ class Aggregate(Enum):
     none = "none"
     before_cve = "before"
     after_cve = "after"
-    
 
 
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
@@ -226,59 +225,78 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     safe_mkdir("ready_data/" + dirname)
 
     counter = 0
-    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
+    for file in (pbar := tqdm.tqdm(helper.csvs_with_many_vulns)):
 
-        if file in less_than_10_vulns:
-            continue
         counter += 1
 
         repo_holder = Repository()
         repo_holder.file = file
-        try:
-            cur_repo = pd.read_csv(
-                repo_dirs + "/" + file, parse_dates=['created_at'])
-        except pd.errors.EmptyDataError:
-            continue
+        pbar.set_description(f"{file} read")
 
-        # todo: make sure there is no duplicate vulns
+        if not os.path.exists(repo_dirs+"/"+file+".parquet"):
+            try:
+                cur_repo = pd.read_csv(
+                    repo_dirs + "/" + file+".csv", 
+                    low_memory=False, 
+                    parse_dates=['created_at'], 
+                    dtype={"type": "string", "name": "string", "Hash": "string", "Add":  np.float64, "Del":  np.float64, "Files": np.float64, "Vuln":  np.float64})
+            except pd.errors.EmptyDataError:
+                continue
 
-        if cur_repo.shape[0] < 100:
-            ignored.append(file)
-            continue
+            # todo: make sure there is no duplicate vulns
 
-        number_of_vulns = cur_repo[cur_repo["type"] == "VulnEvent"].shape[0]
-        if number_of_vulns < 10:
-            ignored.append(file)
-            continue
+            if cur_repo.shape[0] < 100:
+                ignored.append(file)
+                continue
+            cur_repo["Hash"] = cur_repo["Hash"].fillna("")
+            cur_repo = cur_repo.fillna(0)
 
-        pbar.set_description(f"{file},{number_of_vulns} ")
+            number_of_vulns = cur_repo[cur_repo['Vuln'] != 0].shape[0]
+            ignored.append((file, number_of_vulns))
 
-        cur_repo = fix_repo_shape(all_set, cur_repo)
-        vulns = cur_repo.index[cur_repo['is_vuln'] > 0].tolist()
-        benigns = cur_repo.index[cur_repo['is_vuln'] == 0].tolist()
-        ignore_dates = set([vuln[0].date() for vuln in vulns])
-        ignore_dates |= set(datetime.timedelta(days=1) +
-                            date for date in ignore_dates)
-        ignore_dates |= set(datetime.timedelta(days=-1) +
-                            date for date in ignore_dates)
-        not_near_vulns = cur_repo[cur_repo.index.to_series().apply(
-            lambda row: row[0].date() not in ignore_dates)]
-        benigns = not_near_vulns.index[not_near_vulns['is_vuln'] == 0].tolist()
+            pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
+
+            cur_repo = fix_repo_shape(all_set, cur_repo)
+            """
+            ignore_dates = set([vuln[0].date() for vuln in vulns])
+            ignore_dates |= set(datetime.timedelta(days=1) +
+                                date for date in ignore_dates)
+            ignore_dates |= set(datetime.timedelta(days=-1) +
+                                date for date in ignore_dates)
+            not_near_vulns = cur_repo[cur_repo.index.to_series().apply(
+                lambda row: row[0].date() not in ignore_dates)]
+            benigns = not_near_vulns.index[not_near_vulns['is_vuln'] == 0].tolist()"""
+
+            cur_repo.to_parquet(repo_dirs + "/" + file+".parquet")
+        
+        else:
+            cur_repo = pd.read_parquet(repo_dirs + "/" + file+".parquet")
+
+        vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
+        benigns = cur_repo.index[cur_repo['Vuln'] == 0].tolist()
         random.shuffle(benigns)
         benigns = benigns[:benign_vuln_ratio*len(vulns)]
-        cols_at_end = ['is_vuln']
-        cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
-                            + [c for c in cols_at_end if c in cur_repo]]
+        cur_repo = cur_repo.drop(["Vuln"], axis=1)
+        # cols_at_end = ['is_vuln']
+        # cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
+        #                    + [c for c in cols_at_end if c in cur_repo]]
+
+        pbar.set_description(f"{file},{number_of_vulns} extract_window")
 
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
         extract_window(aggr_options, hours, days, resample, backs,
-                       file, repo_holder.vuln_lst,repo_holder.vuln_details, cur_repo, vulns, VULN_TAG)
+                       file, repo_holder.vuln_lst, repo_holder.vuln_details, cur_repo, vulns, VULN_TAG)
         extract_window(aggr_options, hours, days, resample, backs,
-                       file, repo_holder.benign_lst,repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
+                       file, repo_holder.benign_lst, repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
+
+        pbar.set_description(f"{file},{number_of_vulns} pad")
 
         repo_holder.pad_repo()
+
+        pbar.set_description(f"{file},{number_of_vulns} save")
+
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
 
@@ -287,9 +305,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     return all_repos
 
 
-
-
-def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,details_lst, cur_repo, cur_list, tag):
+def extract_window(aggr_options, hours, days, resample, backs, file, window_lst, details_lst, cur_repo, cur_list, tag):
     """
     pulls out a window of events from the repo
     :param aggr_options: can be before, after or none, to decide how we agregate
@@ -313,26 +329,26 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
 
 
 def fix_repo_shape(all_set, cur_repo):
+    cur_repo['created_at'] = pd.to_datetime(cur_repo['created_at'], utc=True)
+    cur_repo = cur_repo.set_index(["created_at"])
     cur_repo = cur_repo.sort_index()
-    cur_repo = cur_repo[cur_repo["created_at"].notnull()]
+    cur_repo = cur_repo[cur_repo.index.notnull()]
     all_set.update(cur_repo.type.unique())
     cur_repo['idx'] = range(len(cur_repo))
-    cur_repo = cur_repo.set_index(["created_at", "idx"])
+    cur_repo = cur_repo.reset_index().set_index(["created_at", "idx"])
 
     # cur_repo = cur_repo[cur_repo.index.notnull()]
-    for commit_change in ["additions", "deletions"]:
+    for commit_change in ["Add", "Del", "Files"]:
         cur_repo[commit_change].fillna(0, inplace=True)
         cur_repo[commit_change] = cur_repo[commit_change].astype(int)
         cur_repo[commit_change] = (
             cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
 
-    cur_repo["is_vuln"] = cur_repo.type.apply(
-        lambda x: 1 if x == "VulnEvent" else 0)
-
     cur_repo = add_type_one_hot_encoding(cur_repo)
     cur_repo = cur_repo.drop(["type"], axis=1)
     cur_repo = cur_repo.drop(["name"], axis=1)
     cur_repo = cur_repo.drop(["Unnamed: 0"], axis=1)
+    cur_repo = cur_repo.drop(["Hash"], axis=1)
     return cur_repo
 
 
