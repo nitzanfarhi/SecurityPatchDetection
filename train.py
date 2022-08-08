@@ -154,6 +154,10 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         res = res.resample(f'{resample}H').sum()
         res = add_time_one_hot_encoding(res, with_idx=False)
 
+    elif aggr_options == Aggregate.before_cve:
+        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
+        event[1] - backs:event[1] + backs]   
+
     elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
             event[1] - backs:event[1] + befs]
@@ -225,77 +229,68 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     safe_mkdir("ready_data/" + dirname)
 
     counter = 0
-    for file in (pbar := tqdm.tqdm(helper.csvs_with_many_vulns)):
+    for file in (pbar := tqdm.tqdm(helper.alls[::])):
 
         counter += 1
-
+        # if counter > 20:
+        #     break
         repo_holder = Repository()
         repo_holder.file = file
         pbar.set_description(f"{file} read")
 
         if not os.path.exists(repo_dirs+"/"+file+".parquet"):
+            continue
             try:
                 cur_repo = pd.read_csv(
-                    repo_dirs + "/" + file+".csv", 
-                    low_memory=False, 
-                    parse_dates=['created_at'], 
+                    repo_dirs + "/" + file+".csv",
+                    low_memory=False,
+                    parse_dates=['created_at'],
                     dtype={"type": "string", "name": "string", "Hash": "string", "Add":  np.float64, "Del":  np.float64, "Files": np.float64, "Vuln":  np.float64})
             except pd.errors.EmptyDataError:
                 continue
 
-            # todo: make sure there is no duplicate vulns
-
-            if cur_repo.shape[0] < 100:
-                ignored.append(file)
-                continue
-            cur_repo["Hash"] = cur_repo["Hash"].fillna("")
-            cur_repo = cur_repo.fillna(0)
-
-            number_of_vulns = cur_repo[cur_repo['Vuln'] != 0].shape[0]
-            ignored.append((file, number_of_vulns))
-
-            pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
-
-            cur_repo = fix_repo_shape(all_set, cur_repo)
-            """
-            ignore_dates = set([vuln[0].date() for vuln in vulns])
-            ignore_dates |= set(datetime.timedelta(days=1) +
-                                date for date in ignore_dates)
-            ignore_dates |= set(datetime.timedelta(days=-1) +
-                                date for date in ignore_dates)
-            not_near_vulns = cur_repo[cur_repo.index.to_series().apply(
-                lambda row: row[0].date() not in ignore_dates)]
-            benigns = not_near_vulns.index[not_near_vulns['is_vuln'] == 0].tolist()"""
-
             cur_repo.to_parquet(repo_dirs + "/" + file+".parquet")
-        
+
         else:
             cur_repo = pd.read_parquet(repo_dirs + "/" + file+".parquet")
+        
+        if cur_repo.shape[0] < 100:
+            ignored.append(file)
+            continue
+        cur_repo["Hash"] = cur_repo["Hash"].fillna("")
+        cur_repo = cur_repo.fillna(0)
+
+
+        number_of_vulns = cur_repo[cur_repo['Vuln'] != 0].shape[0]
+        ignored.append((file, number_of_vulns))
+
+        pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
+
+        cur_repo = fix_repo_shape(all_set, cur_repo)
 
         vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
+        if not len(vulns):
+            continue
         benigns = cur_repo.index[cur_repo['Vuln'] == 0].tolist()
         random.shuffle(benigns)
         benigns = benigns[:benign_vuln_ratio*len(vulns)]
-        cur_repo = cur_repo.drop(["Vuln"], axis=1)
-        # cols_at_end = ['is_vuln']
-        # cur_repo = cur_repo[[c for c in cur_repo if c not in cols_at_end]
-        #                    + [c for c in cols_at_end if c in cur_repo]]
 
-        pbar.set_description(f"{file},{number_of_vulns} extract_window")
-
+        cur_repo = cur_repo.drop(["Vuln"],axis=1)
+        pbar.set_description(f"{file} extract_window")
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
 
         extract_window(aggr_options, hours, days, resample, backs,
                        file, repo_holder.vuln_lst, repo_holder.vuln_details, cur_repo, vulns, VULN_TAG)
+
         extract_window(aggr_options, hours, days, resample, backs,
                        file, repo_holder.benign_lst, repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
 
-        pbar.set_description(f"{file},{number_of_vulns} pad")
+        pbar.set_description(f"{file} pad")
 
         repo_holder.pad_repo()
 
-        pbar.set_description(f"{file},{number_of_vulns} save")
+        pbar.set_description(f"{file} save")
 
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
@@ -330,6 +325,7 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
 
 def fix_repo_shape(all_set, cur_repo):
     cur_repo['created_at'] = pd.to_datetime(cur_repo['created_at'], utc=True)
+    cur_repo = cur_repo[~cur_repo.duplicated(subset=['created_at','Vuln'],keep='first')]
     cur_repo = cur_repo.set_index(["created_at"])
     cur_repo = cur_repo.sort_index()
     cur_repo = cur_repo[cur_repo.index.notnull()]
@@ -414,7 +410,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20):
 
     model = model1
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True,
-                        validation_data=(X_val, y_val), callbacks=[es])
+                        validation_data=(X_val, y_val), callbacks=[])
 
     model_name = f'{model=}'.split('=')[0]
     pyplot.plot(history.history['accuracy'])
@@ -577,6 +573,8 @@ def main():
         else:
             all_repos.remove(repo)
 
+    for repo in all_repos:
+        repo.pad_repo(to_pad=to_pad)
     TRAIN_SIZE = 0.8
     VALIDATION_SIZE = 0.10
     train_size = int(TRAIN_SIZE * num_of_vulns)
@@ -594,16 +592,19 @@ def main():
     vuln_counter = 0
     random.shuffle(all_repos)
     for repo in all_repos:
-        if(vuln_counter < train_size):
+        if(vuln_counter < validation_size):
             logging.debug(f"Train - {repo.file}")
-            train_repos.append(repo)
+            validation_repos.append(repo)
         elif(vuln_counter < train_size + validation_size):
             logging.debug(f"Val - {repo.file}")
-            validation_repos.append(repo)
+            train_repos.append(repo)
         else:
             logging.debug(f"Test - {repo.file}")
             test_repos.append(repo)
         vuln_counter += repo.get_num_of_vuln()
+
+    if not train_repos or not validation_repos or not test_repos:
+        raise Exception("Not enough data, or data not splitted well")
 
     X_train, y_train = split_into_x_and_y(train_repos)
     X_val, y_val, val_details = split_into_x_and_y(
