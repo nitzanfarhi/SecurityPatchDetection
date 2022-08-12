@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 from tensorflow.keras.callbacks import EarlyStopping
-from models import conv1d, conv1d_more_layers, lstm, small_conv1d
-from sklearn.metrics import roc_curve, auc
+from tensorflow.keras.optimizers import SGD
+
+from models import conv1d, conv1d_more_layers, lstm, lstm_autoencoder, small_conv1d
+from sklearn.metrics import roc_curve, auc, confusion_matrix
 from helper import find_best_f1, EnumAction, safe_mkdir
 from classes import Repository
 from matplotlib import pyplot as plt
@@ -156,7 +158,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
 
     elif aggr_options == Aggregate.before_cve:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
-        event[1] - backs:event[1] + backs]   
+            event[1] - backs:event[1] + backs]
 
     elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
@@ -168,39 +170,6 @@ repo_dirs = 'hiddenCVE/gh_cve_proccessed'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
-
-nice_list = ['facebook_hhvm.csv',
-             'ffmpeg_ffmpeg.csv',
-             'flatpak_flatpak.csv',
-             'freerdp_freerdp.csv',
-             'git_git.csv',
-             'gpac_gpac.csv',
-             'imagemagick_imagemagick.csv',
-             'kde_kdeconnect-kde.csv',
-             'krb5_krb5.csv',
-             'mantisbt_mantisbt.csv',
-             'op-tee_optee_os.csv',
-             # 'owncloud_core.csv',
-             'php_php-src.csv',
-             'revive-adserver_revive-adserver.csv',
-             # 'rubygems_rubygems.csv',
-             # 'the-tcpdump-group_tcpdump.csv'
-             ]
-
-nice_list2 = ['abrt_abrt.csv', 'clusterlabs_pcs.csv', 'discourse_discourse.csv', 'exponentcms_exponent-cms.csv',
-              'facebook_hhvm.csv', 'ffmpeg_ffmpeg.csv', 'file_file.csv', 'firefly-iii_firefly-iii.csv',
-              'flatpak_flatpak.csv', 'freerdp_freerdp.csv', 'fusionpbx_fusionpbx.csv', 'git_git.csv', 'gpac_gpac.csv',
-              'ifmeorg_ifme.csv', 'imagemagick_imagemagick.csv', 'jenkinsci_jenkins.csv', 'kanboard_kanboard.csv',
-              'kde_kdeconnect-kde.csv', 'koral--_android-gif-drawable.csv', 'krb5_krb5.csv',
-              'libarchive_libarchive.csv', 'libgit2_libgit2.csv', 'libraw_libraw.csv',
-              'livehelperchat_livehelperchat.csv', 'mantisbt_mantisbt.csv', 'mdadams_jasper.csv', 'oisf_suricata.csv',
-              'op-tee_optee_os.csv', 'openssh_openssh-portable.csv', 'openssl_openssl.csv', 'owncloud_core.csv',
-              'php_php-src.csv']
-
-less_than_10_vulns = ['01org_opa-ff.csv', '01org_opa-fm.csv', '01org_tpm2.0-tools.csv', '10gen-archive_mongo-c-driver-legacy.csv', '1up-lab_oneupuploaderbundle.csv', '389ds_389-ds-base.csv', '3s3s_opentrade.csv', '94fzb_zrlog.csv', 'aaron-junker_usoc.csv', 'aaugustin_websockets.csv', 'aawc_unrar.csv', 'abcprintf_upload-image-with-ajax.csv', 'abhinavsingh_proxy.py.csv', 'absolunet_kafe.csv', 'acassen_keepalived.csv', 'accel-ppp_accel-ppp.csv', 'accenture_mercury.csv', 'acinq_eclair.csv', 'acossette_pillow.csv', 'acpica_acpica.csv', 'actions_http-client.csv', 'adaltas_node-csv-parse.csv', 'adaltas_node-mixme.csv', 'adamghill_django-unicorn.csv', 'adamhathcock_sharpcompress.csv', 'adaptivecomputing_torque.csv', 'admidio_admidio.csv', 'adodb_adodb.csv', 'adrienverge_openfortivpn.csv', 'advancedforms_advanced-forms.csv', 'afarkas_lazysizes.csv', 'ahdinosaur_set-in.csv', 'aheckmann_mpath.csv', 'aheckmann_mquery.csv', 'aimhubio_aim.csv', 'aio-libs_aiohttp.csv', 'aircrack-ng_aircrack-ng.csv', 'airmail_airmailplugin-framework.csv', 'airsonic_airsonic.csv', 'ai_nanoid.csv', 'akashrajpurohit_clipper.csv', 'akheron_jansson.csv', 'akimd_bison.csv', 'akrennmair_newsbeuter.csv', 'alanaktion_phproject.csv', 'alandekok_freeradius-server.csv', 'alanxz_rabbitmq-c.csv', 'albertobeta_podcastgenerator.csv', 'alerta_alerta.csv', 'alexreisner_geocoder.csv', 'alex_rply.csv', 'algolia_algoliasearch-helper-js.csv', 'alkacon_apollo-template.csv', 'alkacon_mercury-template.csv', 'alkacon_opencms-core.csv', 'amazeeio_lagoon.csv', 'ambiot_amb1_arduino.csv', 'ambiot_amb1_sdk.csv', 'ampache_ampache.csv', 'amyers634_muracms.csv', 'anchore_anchore-engine.csv', 'andialbrecht_sqlparse.csv', 'andrerenaud_pdfgen.csv', 'android_platform_bionic.csv', 'andrzuk_finecms.csv', 'andya_cgi--simple.csv', 'andyrixon_layerbb.csv', 'angus-c_just.csv', 'ankane_chartkick.csv', 'ansible-collections_community.crypto.csv', 'ansible_ansible-modules-extras.csv', 'antonkueltz_fastecdsa.csv', 'antswordproject_antsword.csv', 'anurodhp_monal.csv', 'anymail_django-anymail.csv', 'aomediacodec_libavif.csv', 'apache_activemq-artemis.csv', 'apache_activemq.csv', 'apache_cordova-plugin-file-transfer.csv', 'apache_cordova-plugin-inappbrowser.csv', 'apache_cxf-fediz.csv', 'apache_cxf.csv', 'apache_incubator-livy.csv', 'apache_incubator-openwhisk-runtime-docker.csv', 'apache_incubator-openwhisk-runtime-php.csv', 'apache_ofbiz-framework.csv', 'apache_openoffice.csv', 'apache_vcl.csv', 'apexcharts_apexcharts.js.csv', 'apollosproject_apollos-apps.csv', 'apostrophecms_apostrophe.csv', 'apple_cups.csv', 'appneta_tcpreplay.csv', 'aptana_jaxer.csv', 'aquaverde_aquarius-core.csv', 'aquynh_capstone.csv', 'arangodb_arangodb.csv', 'archivy_archivy.csv', 'ardatan_graphql-tools.csv', 'ardour_ardour.csv', 'area17_twill.csv', 'aresch_rencode.csv', 'argoproj_argo-cd.csv', 'arjunmat_slack-chat.csv', 'arrow-kt_arrow.csv', 'arsenal21_all-in-one-wordpress-security.csv', 'arsenal21_simple-download-monitor.csv', 'arslancb_clipbucket.csv', 'artifexsoftware_ghostpdl.csv', 'artifexsoftware_jbig2dec.csv', 'asaianudeep_deep-override.csv', 'ashinn_irregex.csv', 'askbot_askbot-devel.csv', 'assfugil_nickchanbot.csv', 'asteinhauser_fat_free_crm.csv', 'atheme_atheme.csv', 'atheme_charybdis.csv', 'atinux_schema-inspector.csv', 'att_ast.csv', 'auracms_auracms.csv', 'aurelia_path.csv', 'auth0_ad-ldap-connector.csv', 'auth0_auth0.js.csv',
-                      'auth0_express-jwt.csv', 'auth0_express-openid-connect.csv', 'auth0_lock.csv', 'auth0_nextjs-auth0.csv', 'auth0_node-auth0.csv', 'auth0_node-jsonwebtoken.csv', 'auth0_omniauth-auth0.csv', 'authelia_authelia.csv', 'authguard_authguard.csv', 'authzed_spicedb.csv', 'automattic_genericons.csv', 'automattic_mongoose.csv', 'autotrace_autotrace.csv', 'autovance_ftp-srv.csv', 'avar_plack.csv', 'avast_retdec.csv', 'awslabs_aws-js-s3-explorer.csv', 'awslabs_tough.csv', 'aws_aws-sdk-js-v3.csv', 'aws_aws-sdk-js.csv', 'axdoomer_doom-vanille.csv', 'axios_axios.csv', 'axkibe_lsyncd.csv', 'b-heilman_bmoor.csv', 'babelouest_glewlwyd.csv', 'babelouest_ulfius.csv', 'bacula-web_bacula-web.csv', 'badongdyc_fangfacms.csv', 'bagder_curl.csv', 'balderdashy_sails-hook-sockets.csv', 'ballerina-platform_ballerina-lang.csv', 'bbangert_beaker.csv', 'bbengfort_confire.csv', 'bblanchon_arduinojson.csv', 'bblfsh_bblfshd.csv', 'bcfg2_bcfg2.csv', 'bcit-ci_codeigniter.csv', 'bcosca_fatfree-core.csv', 'bdew-minecraft_bdlib.csv', 'beanshell_beanshell.csv', 'behdad_harfbuzz.csv', 'belledonnecommunications_belle-sip.csv', 'belledonnecommunications_bzrtp.csv', 'benjaminkott_bootstrap_package.csv', 'bertramdev_asset-pipeline.csv', 'bettererrors_better_errors.csv', 'billz_raspap-webgui.csv', 'bit-team_backintime.csv', 'bitcoin_bitcoin.csv', 'bitlbee_bitlbee.csv', 'bitmessage_pybitmessage.csv', 'bittorrent_bootstrap-dht.csv', 'blackcatdevelopment_blackcatcms.csv', 'blackducksoftware_hub-rest-api-python.csv', 'blogifierdotnet_blogifier.csv', 'blogotext_blogotext.csv', 'blosc_c-blosc2.csv', 'bludit_bludit.csv', 'blueness_sthttpd.csv', 'bluez_bluez.csv', 'bminor_bash.csv', 'bminor_glibc.csv', 'bonzini_qemu.csv', 'boonebgorges_buddypress-docs.csv', 'boonstra_slideshow.csv', 'boothj5_profanity.csv', 'bottlepy_bottle.csv', 'bouke_django-two-factor-auth.csv', 'bower_bower.csv', 'boxug_trape.csv', 'bradyvercher_gistpress.csv', 'braekling_wp-matomo.csv', 'bratsche_pango.csv', 'brave_brave-core.csv', 'brave_muon.csv', 'briancappello_flask-unchained.csv', 'brocaar_chirpstack-network-server.csv', 'broofa_node-uuid.csv', 'brookinsconsulting_bccie.csv', 'browserless_chrome.csv', 'browserslist_browserslist.csv', 'browserup_browserup-proxy.csv', 'bro_bro.csv', 'btcpayserver_btcpayserver.csv', 'buddypress_buddypress.csv', 'bytecodealliance_lucet.csv', 'bytom_bytom.csv', 'c-ares_c-ares.csv', 'c2fo_fast-csv.csv', 'cakephp_cakephp.csv', 'canarymail_mailcore2.csv', 'candlepin_candlepin.csv', 'candlepin_subscription-manager.csv', 'canonicalltd_subiquity.csv', 'caolan_forms.csv', 'capnproto_capnproto.csv', 'carltongibson_django-filter.csv', 'carrierwaveuploader_carrierwave.csv', 'catfan_medoo.csv', 'cauldrondevelopmentllc_cbang.csv', 'ccxvii_mujs.csv', 'cdcgov_microbetrace.csv', 'cdrummond_cantata.csv', 'cdr_code-server.csv', 'ceph_ceph-deploy.csv', 'ceph_ceph-iscsi-cli.csv', 'certtools_intelmq-manager.csv', 'cesanta_mongoose-os.csv', 'cesanta_mongoose.csv', 'cesnet_perun.csv', 'chalk_ansi-regex.csv', 'charleskorn_kaml.csv', 'charybdis-ircd_charybdis.csv', 'chaskiq_chaskiq.csv', 'chatsecure_chatsecure-ios.csv', 'chatwoot_chatwoot.csv', 'check-spelling_check-spelling.csv', 'cherokee_webserver.csv', 'chevereto_chevereto-free.csv', 'chillu_silverstripe-framework.csv', 'chjj_marked.csv', 'chocolatey_boxstarter.csv', 'chopmo_rack-ssl.csv', 'chrisd1100_uncurl.csv', 'chyrp_chyrp.csv',
-                      'circl_ail-framework.csv', 'cisco-talos_clamav-devel.csv', 'cisco_thor.csv', 'civetweb_civetweb.csv', 'ckeditor_ckeditor4.csv', 'ckolivas_cgminer.csv', 'claviska_simple-php-captcha.csv', 'clientio_joint.csv', 'cloudendpoints_esp.csv', 'cloudfoundry_php-buildpack.csv', 'clusterlabs_pacemaker.csv', 'cmuir_uncurl.csv', 'cnlh_nps.csv', 'cobbler_cobbler.csv', 'cockpit-project_cockpit.csv', 'codecov_codecov-node.csv', 'codehaus-plexus_plexus-archiver.csv', 'codehaus-plexus_plexus-utils.csv', 'codeigniter4_codeigniter4.csv', 'codemirror_codemirror.csv', 'codiad_codiad.csv', 'cog-creators_red-dashboard.csv', 'cog-creators_red-discordbot.csv', 'collectd_collectd.csv', 'commenthol_serialize-to-js.csv', 'common-workflow-language_cwlviewer.csv', 'composer_composer.csv', 'composer_windows-setup.csv', 'concrete5_concrete5-legacy.csv', 'containers_bubblewrap.csv', 'containers_image.csv', 'containers_libpod.csv', 'containous_traefik.csv', 'contiki-ng_contiki-ng.csv', 'convos-chat_convos.csv', 'cooltey_c.p.sub.csv', 'coreutils_gnulib.csv', 'corosync_corosync.csv', 'cosenary_instagram-php-api.csv', 'cosmos_cosmos-sdk.csv', 'cotonti_cotonti.csv', 'coturn_coturn.csv', 'crater-invoice_crater.csv', 'crawl_crawl.csv', 'creatiwity_witycms.csv', 'creharmony_node-etsy-client.csv', 'crowbar_barclamp-crowbar.csv', 'crowbar_barclamp-deployer.csv', 'crowbar_barclamp-trove.csv', 'crowbar_crowbar-openstack.csv', 'crypto-org-chain_cronos.csv', 'cthackers_adm-zip.csv', 'ctripcorp_apollo.csv', 'ctz_rustls.csv', 'cubecart_v6.csv', 'cure53_dompurify.csv', 'cvandeplas_pystemon.csv', 'cve-search_cve-search.csv', 'cveproject_cvelist.csv', 'cyberark_conjur-oss-helm-chart.csv', 'cyberhobo_wordpress-geo-mashup.csv', 'cydrobolt_polr.csv', 'cyrusimap_cyrus-imapd.csv', 'cyu_rack-cors.csv', 'd0c-s4vage_lookatme.csv', 'd4software_querytree.csv', 'daaku_nodejs-tmpl.csv', 'dagolden_capture-tiny.csv', 'dajobe_raptor.csv', 'daltoniam_starscream.csv', 'dandavison_delta.csv', 'dankogai_p5-encode.csv', 'danschultzer_pow.csv', 'darktable-org_rawspeed.csv', 'darold_squidclamav.csv', 'dart-lang_sdk.csv', 'darylldoyle_svg-sanitizer.csv', 'dashbuilder_dashbuilder.csv', 'datacharmer_dbdeployer.csv', 'datatables_datatablessrc.csv', 'datatables_dist-datatables.csv', 'dav-git_dav-cogs.csv', 'davegamble_cjson.csv', 'davidben_nspluginwrapper.csv', 'davideicardi_confinit.csv', 'davidjclark_phpvms-popupnews.csv', 'daylightstudio_fuel-cms.csv', 'dbeaver_dbeaver.csv', 'dbijaya_onlinevotingsystem.csv', 'dcit_perl-crypt-jwt.csv', 'debiki_talkyard.csv', 'deislabs_oras.csv', 'delta_pragyan.csv', 'delvedor_find-my-way.csv', 'demon1a_discord-recon.csv', 'denkgroot_spina.csv', 'deoxxa_dotty.csv', 'dependabot_dependabot-core.csv', 'derf_feh.csv', 'derickr_timelib.csv', 'derrekr_android_security.csv', 'desrt_systemd-shim.csv', 'deuxhuithuit_symphony-2.csv', 'devsnd_cherrymusic.csv', 'dexidp_dex.csv', 'dgl_cgiirc.csv', 'dhis2_dhis2-core.csv', 'diegohaz_bodymen.csv', 'diegohaz_querymen.csv', 'dieterbe_uzbl.csv', 'digint_btrbk.csv', 'digitalbazaar_forge.csv', 'dingelish_rust-base64.csv', 'dinhviethoa_libetpan.csv', 'dino_dino.csv', 'directus_app.csv', 'directus_directus.csv', 'discourse_discourse-footnote.csv', 'discourse_discourse-reactions.csv', 'discourse_message_bus.csv', 'discourse_rails_multisite.csv', 'diversen_gallery.csv', 'divio_django-cms.csv', 'diygod_rsshub.csv', 'djabberd_djabberd.csv', 'django-helpdesk_django-helpdesk.csv', 'django-wiki_django-wiki.csv', 'dlitz_pycrypto.csv', 'dmendel_bindata.csv', 'dmgerman_ninka.csv', 'dmlc_ps-lite.csv', 'dmproadmap_roadmap.csv', 'dnnsoftware_dnn.platform.csv', 'docker_cli.csv', 'docker_docker-credential-helpers.csv', 'docsifyjs_docsify.csv', 'doctrine_dbal.csv', 'documize_community.csv', 'dogtagpki_pki.csv', 'dojo_dijit.csv', 'dojo_dojo.csv', 'dojo_dojox.csv', 'dollarshaveclub_shave.csv', 'dom4j_dom4j.csv', 'domoticz_domoticz.csv', 'dompdf_dompdf.csv', 'doorgets_doorgets.csv', 'doorkeeper-gem_doorkeeper.csv', 'dosfstools_dosfstools.csv', 'dotcms_core.csv', 'dotse_zonemaster-gui.csv', 'dottgonzo_node-promise-probe.csv', 'dovecot_core.csv', 'doxygen_doxygen.csv', 'dozermapper_dozer.csv', 'dpgaspar_flask-appbuilder.csv', 'dracutdevs_dracut.csv', 'dramforever_vscode-ghc-simple.csv', 'drk1wi_portspoof.csv', 'droolsjbpm_drools.csv', 'droolsjbpm_jbpm-designer.csv', 'droolsjbpm_jbpm.csv', 'droolsjbpm_kie-wb-distributions.csv', 'dropbox_lepton.csv', 'dropwizard_dropwizard.csv', 'drudru_ansi_up.csv', 'dspace_dspace.csv', 'dspinhirne_netaddr-rb.csv', 'dsyman2_integriaims.csv', 'dtschump_cimg.csv', 'duchenerc_artificial-intelligence.csv', 'duffelhq_paginator.csv', 'dukereborn_cmum.csv', 'duncaen_opendoas.csv', 'dutchcoders_transfer.sh.csv', 'dvirtz_libdwarf.csv', 'dweomer_containerd.csv', 'dwisiswant0_apkleaks.csv', 'dw_mitogen.csv', 'dynamoose_dynamoose.csv', 'e107inc_e107.csv', 'e2guardian_e2guardian.csv', 'e2openplugins_e2openplugin-openwebif.csv', 'eclipse-ee4j_mojarra.csv', 'eclipse_mosquitto.csv', 'eclipse_rdf4j.csv', 'eclipse_vert.x.csv', 'edge-js_edge.csv', 'edgexfoundry_app-functions-sdk-go.csv', 'edx_edx-platform.csv', 'eflexsystems_node-samba-client.csv', 'eggjs_extend2.csv', 'egroupware_egroupware.csv', 'eiskalteschatten_compile-sass.csv', 'eivindfjeldstad_dot.csv', 'elabftw_elabftw.csv', 'elastic_elasticsearch.csv', 'eldy_awstats.csv', 'elementary_switchboard-plug-bluetooth.csv', 'elementsproject_lightning.csv', 'elixir-plug_plug.csv', 'ellson_graphviz.csv', 'elmar_ldap-git-backup.csv', 'elric1_knc.csv', 'elves_elvish.csv', 'embedthis_appweb.csv', 'embedthis_goahead.csv', 'emca-it_energy-log-server-6.x.csv', 'emlog_emlog.csv', 'enalean_gitphp.csv', 'enferex_pdfresurrect.csv', 'ensc_irssi-proxy.csv', 'ensdomains_ens.csv', 'enviragallery_envira-gallery-lite.csv', 'envoyproxy_envoy.csv', 'ericcornelissen_git-tag-annotation-action.csv', 'ericcornelissen_shescape.csv', 'ericnorris_striptags.csv', 'ericpaulbishop_gargoyle.csv', 'erikdubbelboer_phpredisadmin.csv', 'erlang_otp.csv', 'erlyaws_yaws.csv', 'esl_mongooseim.csv', 'esnet_iperf.csv', 'esphome_esphome.csv', 'ethereum_go-ethereum.csv', 'ethereum_solidity.csv', 'ether_ueberdb.csv', 'ettercap_ettercap.csv', 'eugeneware_changeset.csv', 'eugeny_ajenti.csv', 'evangelion1204_multi-ini.csv', 'evanphx_json-patch.csv', 'evilnet_nefarious2.csv', 'evilpacket_marked.csv',
-                      'excon_excon.csv', 'exiftool_exiftool.csv', 'exim_exim.csv', 'express-handlebars_express-handlebars.csv', 'eyesofnetworkcommunity_eonweb.csv', 'ezsystems_ezjscore.csv', 'f21_jwt.csv', 'fabiocaccamo_utils.js.csv', 'fabpot_twig.csv', 'facebookincubator_fizz.csv', 'facebookincubator_mvfst.csv', 'facebookresearch_parlai.csv', 'facebook_buck.csv', 'facebook_folly.csv', 'facebook_mcrouter.csv', 'facebook_nuclide.csv', 'facebook_react-native.csv', 'facebook_wangle.csv', 'facebook_zstd.csv', 'faisalman_ua-parser-js.csv', 'faiyazalam_wordpress-plugin-user-login-history.csv', 'fardog_trailing-slash.csv', 'fasterxml_jackson-dat']
 
 
 class Aggregate(Enum):
@@ -253,13 +222,12 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         else:
             cur_repo = pd.read_parquet(repo_dirs + "/" + file+".parquet")
-        
+
         if cur_repo.shape[0] < 100:
             ignored.append(file)
             continue
         cur_repo["Hash"] = cur_repo["Hash"].fillna("")
         cur_repo = cur_repo.fillna(0)
-
 
         number_of_vulns = cur_repo[cur_repo['Vuln'] != 0].shape[0]
         ignored.append((file, number_of_vulns))
@@ -275,7 +243,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         random.shuffle(benigns)
         benigns = benigns[:benign_vuln_ratio*len(vulns)]
 
-        cur_repo = cur_repo.drop(["Vuln"],axis=1)
+        cur_repo = cur_repo.drop(["Vuln"], axis=1)
         pbar.set_description(f"{file} extract_window")
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
@@ -325,7 +293,8 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
 
 def fix_repo_shape(all_set, cur_repo):
     cur_repo['created_at'] = pd.to_datetime(cur_repo['created_at'], utc=True)
-    cur_repo = cur_repo[~cur_repo.duplicated(subset=['created_at','Vuln'],keep='first')]
+    cur_repo = cur_repo[~cur_repo.duplicated(
+        subset=['created_at', 'Vuln'], keep='first')]
     cur_repo = cur_repo.set_index(["created_at"])
     cur_repo = cur_repo.sort_index()
     cur_repo = cur_repo[cur_repo.index.notnull()]
@@ -352,8 +321,11 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
     """
     :return: name of the directory to save the data in
     """
-    name_template = f"{str(aggr_options)}_{benign_vuln_ratio}_H{hours}_D{days}_R{resample}_B{backs}"
-    logging.debug(name_template)
+    if aggr_options == Aggregate.before_cve:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"
+    elif aggr_options == Aggregate.after_cve:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"
+    logger.debug(name_template)
     return name_template
 
 
@@ -373,7 +345,7 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     dirname = make_new_dir_name(
         aggr_options, backs, benign_vuln_ratio, days, hours, resample)
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
-        logging.info(f"Loading Dataset {dirname}")
+        logger.info(f"Loading Dataset {dirname}")
         all_repos = []
         for file in os.listdir("ready_data/" + dirname):
             with open("ready_data/" + dirname + "/" + file, 'rb') as f:
@@ -381,44 +353,56 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
                 all_repos.append(repo)
 
     else:
-        logging.info(f"Creating Dataset {dirname}")
+        logger.info(f"Creating Dataset {dirname}")
         all_repos = create_dataset(
             aggr_options, benign_vuln_ratio, hours, days, resample, backs)
 
     return all_repos, dirname
 
 
-def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20):
+
+def model_selector(model_name,shape1,shape2, optimizer):
+    if model_name == "lstm":
+        return lstm(shape1,shape2, optimizer)
+    if model_name == "conv1d":
+        return conv1d(shape1,shape2, optimizer)
+
+    if model_name == "lstm_autoencoder":
+        return lstm_autoencoder(shape1,shape2, optimizer)
+
+    raise Exception("Model Not Found!")
+
+def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20, model_name="LSTM"):
     """
     Evaluate the model with the given data.
     """
 
-    model1 = conv1d(X_train.shape[1], X_train.shape[2])
+    optimizer = SGD(lr=0.01, momentum=0.9, nesterov=True, clipnorm=1.)
+    # Create the model
+    model = model_selector(model_name,X_train.shape[1],X_train.shape[2], optimizer)
 
-    # define model
-    model2 = conv1d_more_layers(X_train.shape[1], X_train.shape[2])
-
-    model3 = lstm(X_train.shape[1], X_train.shape[2])
-
-    model4 = small_conv1d(X_train.shape[1], X_train.shape[2])
 
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=20)
 
     verbose = 0
-    if logging.INFO <= logging.root.level:
+    if logger.level < logging.CRITICAL:
         verbose = 1
 
-    model = model1
+    validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True,
-                        validation_data=(X_val, y_val), callbacks=[])
+                        validation_data=validation_data, callbacks=[])
 
     model_name = f'{model=}'.split('=')[0]
     pyplot.plot(history.history['accuracy'])
-    pyplot.plot(history.history['val_accuracy'])
+    if validation_data:
+        pyplot.plot(history.history['val_accuracy'])
     pyplot.title('model accuracy')
     pyplot.ylabel('accuracy')
     pyplot.xlabel('epoch')
-    pyplot.legend(['train', 'val'], loc='upper left')
+    if validation_data:
+        pyplot.legend(['train', 'val'], loc='upper left')
+    else:
+        pyplot.legend(['train'], loc='upper left')
     pyplot.draw()
 
     safe_mkdir("figs")
@@ -463,13 +447,17 @@ def check_results(X_test, y_test, pred, model, exp_name):
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     model_name = f'{model=}'.split('=')[0]
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
-    logging.debug(max_f1, thresh)
+    logger.debug(max_f1, thresh)
     with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
         mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
         mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
+        mfile.write('confusion matrix:\n')
+        conf_matrix = confusion_matrix(y_test, pred > thresh)
+        mfile.write(str(conf_matrix))
 
-        logging.critical('Accuracy: %.2f%%' % (scores[1] * 100))
-        logging.critical('fscore: %.2f%%' % (max_f1 * 100))
+        logger.critical('Accuracy: %.2f%%' % (scores[1] * 100))
+        logger.critical('fscore: %.2f%%' % (max_f1 * 100))
+        logger.critical(str(conf_matrix))
 
     fpr = dict()
     tpr = dict()
@@ -506,14 +494,17 @@ def parse_args():
     parser.add_argument('-b', '--backs', type=int, default=10,
                         help=' using none aggregation, operations back')
     parser.add_argument('-v', '--verbose', help="Be verbose",
-                        action="store_const", dest="loglevel", const=logging.INFO)
+                        action="store_const", dest="loglevel", const=logging.DEBUG)
     parser.add_argument('-c', '--cache', '--cached', help="Use Cached Data",
                         action="store_const", dest="cache",  const=True)
     parser.add_argument('-e', '--epochs', type=int, default=10,
                         help=' using none aggregation, operations back')
     parser.add_argument('-f', '--find-fp', help="Find False positive commits", action="store_const",
                         dest="fp", const=True)
+    parser.add_argument('-m','--model', action='store', type=str, help='The model to receive.')
 
+    parser.add_argument('-k', '--kfold', type=int,
+                        default=10, help="Kfold cross validation")
     args = parser.parse_args()
     return args
 
@@ -552,7 +543,10 @@ def init():
 
 def main():
     args = parse_args()
-    logging.basicConfig(level=args.loglevel)
+    if not args.loglevel:
+        logger.level = logging.CRITICAL
+    else:
+        logger.level = args.loglevel
 
     init()
 
@@ -576,48 +570,58 @@ def main():
     for repo in all_repos:
         repo.pad_repo(to_pad=to_pad)
     TRAIN_SIZE = 0.8
-    VALIDATION_SIZE = 0.10
+    VALIDATION_SIZE = 0.0
     train_size = int(TRAIN_SIZE * num_of_vulns)
     validation_size = int(VALIDATION_SIZE * num_of_vulns)
     test_size = num_of_vulns - train_size - validation_size
 
-    logging.info(f"Train size: {train_size}")
-    logging.info(f"Validation size: {validation_size}")
-    logging.info(f"Test size: {test_size}")
+    logger.info(f"Train size: {train_size}")
+    logger.info(f"Validation size: {validation_size}")
+    logger.info(f"Test size: {test_size}")
 
-    train_repos = []
-    validation_repos = []
-    test_repos = []
+    accuracies = []
+    for i in range(args.kfold):
+        train_repos = []
+        validation_repos = []
+        test_repos = []
 
-    vuln_counter = 0
-    random.shuffle(all_repos)
-    for repo in all_repos:
-        if(vuln_counter < validation_size):
-            logging.debug(f"Train - {repo.file}")
-            validation_repos.append(repo)
-        elif(vuln_counter < train_size + validation_size):
-            logging.debug(f"Val - {repo.file}")
-            train_repos.append(repo)
-        else:
-            logging.debug(f"Test - {repo.file}")
-            test_repos.append(repo)
-        vuln_counter += repo.get_num_of_vuln()
+        vuln_counter = 0
+        random.shuffle(all_repos)
+        for repo in all_repos:
+            if(vuln_counter < validation_size):
+                logger.debug(f"Train - {repo.file}")
+                validation_repos.append(repo)
+            elif(vuln_counter < train_size + validation_size):
+                logger.debug(f"Val - {repo.file}")
+                train_repos.append(repo)
+            else:
+                logger.debug(f"Test - {repo.file}")
+                test_repos.append(repo)
+            vuln_counter += repo.get_num_of_vuln()
 
-    if not train_repos or not validation_repos or not test_repos:
-        raise Exception("Not enough data, or data not splitted well")
+        if not train_repos or (not validation_repos and VALIDATION_SIZE != 0) or not test_repos:
+            raise Exception("Not enough data, or data not splitted well")
 
-    X_train, y_train = split_into_x_and_y(train_repos)
-    X_val, y_val, val_details = split_into_x_and_y(
-        validation_repos, with_details=True)
-    X_test, y_test, test_details = split_into_x_and_y(
-        test_repos, with_details=True)
+        X_train, y_train = split_into_x_and_y(train_repos)
+        X_val, y_val, val_details = split_into_x_and_y(
+            validation_repos, with_details=True)
+        X_test, y_test, test_details = split_into_x_and_y(
+            test_repos, with_details=True)
 
-    model = evaluate_data(X_train, y_train, X_val, y_val,
-                          exp_name, epochs=args.epochs)
+        # X_test, y_test, X_val,y_val = X_val, y_val, X_test, y_test
 
-    pred = model.predict(X_test).reshape(-1)
+        model = evaluate_data(X_train, y_train, X_test, y_test,
+                              exp_name, epochs=args.epochs, model_name=args.model)
 
-    _ = check_results(X_test, y_test, pred, model, exp_name)
+        pred = model.predict(X_test).reshape(-1)
+
+        acc = check_results(X_test, y_test, pred, model, exp_name)
+
+        accuracies.append(acc)
+
+    print(f"Average accuracy: {np.mean(accuracies)}")
+    with open(f"results/{exp_name}_K{args.kfold}.txt", 'w') as mfile:
+        mfile.write(f"Average accuracy: {np.mean(accuracies)}")
 
     if args.fp:
         safe_mkdir("output")
@@ -643,7 +647,7 @@ def main():
 
         for _, row in tqdm.tqdm(list(fps.iterrows())):
             if "tensorflow" in row["file"]:
-                logging.debug("Skipping over tf")
+                logger.debug("Skipping over tf")
 
                 continue
             commits = acquire_commits(
