@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras.optimizers import SGD
 
-from models import conv1d, conv1d_more_layers, lstm, lstm_autoencoder, small_conv1d
+from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from helper import find_best_f1, EnumAction, safe_mkdir
 from classes import Repository
@@ -11,6 +12,10 @@ from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
 from pandas import DataFrame
+from keras_tuner import RandomSearch
+from hiddenCVE.graphql import all_langs
+from dateutil import parser
+
 import helper
 import tensorflow as tf
 import numpy as np
@@ -27,6 +32,11 @@ import logging
 
 import coloredlogs
 import logging
+import warnings
+
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
+
+
 logger = logging.getLogger(__name__)
 coloredlogs.install(fmt='%(asctime)s %(levelname)s %(message)s')
 
@@ -105,6 +115,8 @@ def add_type_one_hot_encoding(df):
     return df
 
 
+
+
 def add_time_one_hot_encoding(df, with_idx=False):
     """
     :param df: dataframe to add time one hot encoding to
@@ -167,6 +179,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
 
 
 repo_dirs = 'hiddenCVE/gh_cve_proccessed'
+repo_metadata = 'hiddenCVE/repo_metadata.json'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
@@ -178,7 +191,7 @@ class Aggregate(Enum):
     after_cve = "after"
 
 
-def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs):
+def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs, metadata=False):
     """
 
     :param aggr_options: can be before, after or none, to decide how we agregate
@@ -197,9 +210,14 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
 
-    counter = 0
-    for file in (pbar := tqdm.tqdm(helper.alls[::])):
+    with open(repo_metadata,'r') as mfile:
+        all_metadata = json.load(mfile)
 
+    counter = 0
+    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs))):
+        if ".csv" not in file:
+            continue
+        file = file.split(".csv")[0]
         counter += 1
         # if counter > 20:
         #     break
@@ -208,7 +226,6 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         pbar.set_description(f"{file} read")
 
         if not os.path.exists(repo_dirs+"/"+file+".parquet"):
-            continue
             try:
                 cur_repo = pd.read_csv(
                     repo_dirs + "/" + file+".csv",
@@ -217,7 +234,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
                     dtype={"type": "string", "name": "string", "Hash": "string", "Add":  np.float64, "Del":  np.float64, "Files": np.float64, "Vuln":  np.float64})
             except pd.errors.EmptyDataError:
                 continue
-
+            
             cur_repo.to_parquet(repo_dirs + "/" + file+".parquet")
 
         else:
@@ -230,11 +247,36 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         cur_repo = cur_repo.fillna(0)
 
         number_of_vulns = cur_repo[cur_repo['Vuln'] != 0].shape[0]
-        ignored.append((file, number_of_vulns))
+        if number_of_vulns == 0:
+            ignored.append((file, number_of_vulns))
+            continue
 
         pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
 
         cur_repo = fix_repo_shape(all_set, cur_repo)
+
+
+        if metadata:
+            cur_metadata = all_metadata[file.replace("_","/",1)]
+
+            for key,value in cur_metadata.items():
+                if key == "languages_edges":
+                    for lang in all_langs:
+                        cur_repo[lang] = 0
+                    for lang in value:
+                        cur_repo[lang] = 1
+                    continue
+                if key == 'primaryLanguage_name':
+                    continue
+                if key == "createdAt":
+                    cur_repo["repo_creation_data"]=parser.parse(value).year
+                    continue
+                if key == "fundingLinks":
+                    cur_repo[key]=len(value)
+                    continue
+                cur_repo[key]=value
+
+
 
         vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
         if not len(vulns):
@@ -325,12 +367,16 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
         name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"
     elif aggr_options == Aggregate.after_cve:
         name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"
+    elif aggr_options == Aggregate.none:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"
+    else:
+        raise Exception("Aggr options not supported")
     logger.debug(name_template)
     return name_template
 
 
 def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, days=10, resample=12, backs=50,
-                    cache=False):
+                    cache=False,metadata=False):
     """
     :param aggr_options: Aggregate.none, Aggregate.before_cve, Aggregate.after_cve
     :param benign_vuln_ratio: ratio of benign to vuln events
@@ -355,58 +401,63 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     else:
         logger.info(f"Creating Dataset {dirname}")
         all_repos = create_dataset(
-            aggr_options, benign_vuln_ratio, hours, days, resample, backs)
+            aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata)
 
     return all_repos, dirname
 
 
-
-def model_selector(model_name,shape1,shape2, optimizer):
+def model_selector(model_name, shape1, shape2, optimizer):
     if model_name == "lstm":
-        return lstm(shape1,shape2, optimizer)
+        return lstm(shape1, shape2, optimizer)
     if model_name == "conv1d":
-        return conv1d(shape1,shape2, optimizer)
+        return conv1d(shape1, shape2, optimizer)
 
     if model_name == "lstm_autoencoder":
-        return lstm_autoencoder(shape1,shape2, optimizer)
+        return lstm_autoencoder(shape1, shape2, optimizer)
+    if model_name == "bilstm":
+        return bilstm(shape1, shape2, optimizer)
+    if model_name == "bigru":
+        return bigru(shape1, shape2, optimizer)
 
     raise Exception("Model Not Found!")
 
-def evaluate_data(X_train, y_train, X_val, y_val, exp_name, epochs=20, model_name="LSTM"):
+
+def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs=20, model_name="LSTM"):
     """
     Evaluate the model with the given data.
     """
 
-    optimizer = SGD(lr=0.01, momentum=0.9, nesterov=True, clipnorm=1.)
+    optimizer = SGD(learning_rate=0.1, momentum=0.9,
+                    nesterov=True, clipnorm=1.)
     # Create the model
-    model = model_selector(model_name,X_train.shape[1],X_train.shape[2], optimizer)
-
-
-    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=20)
+    model = model_selector(
+        model_name, X_train.shape[1], X_train.shape[2], optimizer)
+    safe_mkdir("models/")
+    safe_mkdir("models/" + exp_name)
+    mc = ModelCheckpoint(
+        f'models/{exp_name}/best_model.h5', monitor='val_accuracy', mode='min', verbose=1)
+    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=10)
 
     verbose = 0
     if logger.level < logging.CRITICAL:
         verbose = 1
 
     validation_data = (X_val, y_val) if len(X_val) else None
-    history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True,
-                        validation_data=validation_data, callbacks=[])
+    history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True, batch_size=batch_size,
+                        validation_data=validation_data, callbacks=[es, mc])
 
-    model_name = f'{model=}'.split('=')[0]
     pyplot.plot(history.history['accuracy'])
-    if validation_data:
-        pyplot.plot(history.history['val_accuracy'])
+    pyplot.plot(history.history['val_accuracy'])
     pyplot.title('model accuracy')
     pyplot.ylabel('accuracy')
     pyplot.xlabel('epoch')
-    if validation_data:
-        pyplot.legend(['train', 'val'], loc='upper left')
-    else:
-        pyplot.legend(['train'], loc='upper left')
-    pyplot.draw()
+    pyplot.legend(['train', 'val'], loc='upper left')
 
     safe_mkdir("figs")
-    pyplot.savefig(f"figs/{exp_name}_{epochs}_{model_name}.png")
+    last_training = history.history['accuracy'][-1]
+    last_validation = history.history['val_accuracy'][-1]
+    pyplot.savefig(
+        f"figs/{exp_name}_{epochs}_{model_name}_t{last_training}_v{last_validation}.png")
 
     # Final evaluation of the model
     return model
@@ -439,21 +490,21 @@ def acquire_commits(name, date, ignore_errors=False):
     return ""
 
 
-def check_results(X_test, y_test, pred, model, exp_name):
+def check_results(X_test, y_test, pred, model, exp_name, model_name):
     """
     Check the results of the model.
     """
     used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
-    model_name = f'{model=}'.split('=')[0]
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
     logger.debug(max_f1, thresh)
     with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
         mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
         mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
         mfile.write('confusion matrix:\n')
-        conf_matrix = confusion_matrix(y_test, pred > thresh)
-        mfile.write(str(conf_matrix))
+        tn, fp, fn, tp = confusion_matrix(y_test, pred > thresh).ravel()
+        conf_matrix = f"tn={tn}, fp={fp}, fn={fn}, tp={tp}"
+        mfile.write(conf_matrix)
 
         logger.critical('Accuracy: %.2f%%' % (scores[1] * 100))
         logger.critical('fscore: %.2f%%' % (max_f1 * 100))
@@ -501,10 +552,13 @@ def parse_args():
                         help=' using none aggregation, operations back')
     parser.add_argument('-f', '--find-fp', help="Find False positive commits", action="store_const",
                         dest="fp", const=True)
-    parser.add_argument('-m','--model', action='store', type=str, help='The model to receive.')
+    parser.add_argument('-m', '--model', action='store',
+                        type=str, help='The model to receive.')
 
     parser.add_argument('-k', '--kfold', type=int,
                         default=10, help="Kfold cross validation")
+    parser.add_argument('--batch', type=int, default=64, help="Batch size")
+    parser.add_argument('--metadata',action="store_true", help="Use metadata")
     args = parser.parse_args()
     return args
 
@@ -533,6 +587,22 @@ def split_into_x_and_y(repos, with_details=False):
     return X_train, y_train
 
 
+def hypertune(X_train,y_train, X_test, y_test):
+    tuner = RandomSearch(hypertune_bilstm(X_train.shape[1], X_train.shape[2]),
+                         objective='val_accuracy',
+                         max_trials=10,
+                         executions_per_trial=3,
+                         directory='tuner1',
+                         project_name='Clothing2')
+                         
+    # es = EarlyStopping(monitor='val_accuracy', mode='max', patience=20)
+
+    tuner.search(X_train,y_train,epochs=100,validation_data=(X_test,y_test),callbacks=[])
+    tuner.results_summary()
+
+    print(tuner.get_best_hyperparameters(1))
+
+
 def init():
     SEED = 42
     random.seed(SEED)
@@ -556,7 +626,8 @@ def main():
                                           hours=args.hours,
                                           days=args.days,
                                           backs=args.backs,
-                                          cache=args.cache)
+                                          cache=args.cache,
+                                          metadata = args.metadata)
 
     to_pad = 0
     num_of_vulns = 0
@@ -610,12 +681,14 @@ def main():
 
         # X_test, y_test, X_val,y_val = X_val, y_val, X_test, y_test
 
+        hypertune(X_train,y_train, X_test, y_test)
+        return
         model = evaluate_data(X_train, y_train, X_test, y_test,
-                              exp_name, epochs=args.epochs, model_name=args.model)
+                              exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model)
 
         pred = model.predict(X_test).reshape(-1)
 
-        acc = check_results(X_test, y_test, pred, model, exp_name)
+        acc = check_results(X_test, y_test, pred, model, exp_name, args.model)
 
         accuracies.append(acc)
 
