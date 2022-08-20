@@ -129,7 +129,7 @@ def hypertune_bilstm(xshape1, xshape2):
         lstm.add(Bidirectional(LSTM(units=25, activation='tanh',return_sequences=True, dropout=droupout)))
         lstm.add(Bidirectional(LSTM(units=12, activation='tanh',dropout=droupout)))
         lstm.add(Dense(1, activation="sigmoid"))
-        lstm.compile(loss='binary_crossentropy', optimizer=Adam(hp.Choice('learning_rate', values =[1e-2,1e-3,1e-4])), metrics=['accuracy'])
+        lstm.compile(loss='binary_crossentropy', optimizer=SGD(hp.Choice('learning_rate', values =[1e-2,1e-3])), metrics=['accuracy'])
         return lstm
     return build_model
 

@@ -2,7 +2,7 @@
 # coding: utf-8
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.callbacks import ModelCheckpoint
-from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import SGD, Adam
 
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
@@ -191,6 +191,60 @@ class Aggregate(Enum):
     after_cve = "after"
 
 
+all_metadata = json.load(open("hiddenCVE/repo_metadata.json", 'r'))
+
+bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
+
+def add_metadata(cur_repo,file):
+        cur_metadata = all_metadata[file.replace("_","/",1)]
+
+        for key in bool_metadata:
+            cur_repo[key] = 0 
+
+        for key,value in cur_metadata.items():
+            if key == "languages_edges":
+                for lang in all_langs:
+                    cur_repo[lang] = 0
+                for lang in value:
+                    cur_repo[lang] = 1
+
+            elif key == "createdAt":
+                for i in range(2000,2022):
+                    cur_repo["repo_creation_data_"+str(i)] = 0
+                cur_repo["repo_creation_data_"+str(parser.parse(value).year)] = 1
+
+            elif key == "fundingLinks":
+                cur_repo[key]=len(value)
+
+            elif key in bool_metadata:
+                if not value:
+                    cur_repo[key] = 0
+                else:
+                    cur_repo[key]=int(value)
+
+            elif key == 'primaryLanguage_name' or key == 'primaryLanguage' or key == "owner_company":
+                continue
+
+            else:
+                if key not in cur_repo.columns:
+                    print(key)
+
+
+        with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
+            timezone = int(float(f.read()))
+        for tz in range(-12,15):
+            cur_repo["timezone_"+str(tz)] = 0
+        
+        cur_repo["timezone_"+str(timezone)] = 1
+
+        return cur_repo
+
+    # created at
+    # fundingLinks
+    # languages_edges
+
+
+    
 def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs, metadata=False):
     """
 
@@ -210,17 +264,13 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
 
-    with open(repo_metadata,'r') as mfile:
-        all_metadata = json.load(mfile)
-
     counter = 0
     for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs))):
         if ".csv" not in file:
             continue
         file = file.split(".csv")[0]
         counter += 1
-        # if counter > 20:
-        #     break
+
         repo_holder = Repository()
         repo_holder.file = file
         pbar.set_description(f"{file} read")
@@ -253,30 +303,10 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
 
-        cur_repo = fix_repo_shape(all_set, cur_repo)
-
-
         if metadata:
-            cur_metadata = all_metadata[file.replace("_","/",1)]
+            cur_repo = add_metadata(cur_repo,file)
 
-            for key,value in cur_metadata.items():
-                if key == "languages_edges":
-                    for lang in all_langs:
-                        cur_repo[lang] = 0
-                    for lang in value:
-                        cur_repo[lang] = 1
-                    continue
-                if key == 'primaryLanguage_name':
-                    continue
-                if key == "createdAt":
-                    cur_repo["repo_creation_data"]=parser.parse(value).year
-                    continue
-                if key == "fundingLinks":
-                    cur_repo[key]=len(value)
-                    continue
-                cur_repo[key]=value
-
-
+        cur_repo = fix_repo_shape(all_set, cur_repo,metadata=metadata)
 
         vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
         if not len(vulns):
@@ -333,7 +363,7 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
         details_lst.append(details)
 
 
-def fix_repo_shape(all_set, cur_repo):
+def fix_repo_shape(all_set, cur_repo, metadata=False):
     cur_repo['created_at'] = pd.to_datetime(cur_repo['created_at'], utc=True)
     cur_repo = cur_repo[~cur_repo.duplicated(
         subset=['created_at', 'Vuln'], keep='first')]
@@ -344,8 +374,12 @@ def fix_repo_shape(all_set, cur_repo):
     cur_repo['idx'] = range(len(cur_repo))
     cur_repo = cur_repo.reset_index().set_index(["created_at", "idx"])
 
+    integer_fields = ['Add', 'Del', 'Files']
+    if metadata:
+        integer_fields += ['diskUsage']
+
     # cur_repo = cur_repo[cur_repo.index.notnull()]
-    for commit_change in ["Add", "Del", "Files"]:
+    for commit_change in integer_fields:
         cur_repo[commit_change].fillna(0, inplace=True)
         cur_repo[commit_change] = cur_repo[commit_change].astype(int)
         cur_repo[commit_change] = (
@@ -427,8 +461,9 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
     Evaluate the model with the given data.
     """
 
-    optimizer = SGD(learning_rate=0.1, momentum=0.9,
+    optimizer = SGD(learning_rate=0.01, momentum=0.9,
                     nesterov=True, clipnorm=1.)
+    # optimizer = Adam(learning_rate=0.001)
     # Create the model
     model = model_selector(
         model_name, X_train.shape[1], X_train.shape[2], optimizer)
@@ -436,7 +471,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
     safe_mkdir("models/" + exp_name)
     mc = ModelCheckpoint(
         f'models/{exp_name}/best_model.h5', monitor='val_accuracy', mode='min', verbose=1)
-    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=10)
+    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=100)
 
     verbose = 0
     if logger.level < logging.CRITICAL:
@@ -444,7 +479,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
 
     validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True, batch_size=batch_size,
-                        validation_data=validation_data, callbacks=[es, mc])
+                        validation_data=validation_data, callbacks=[mc])
 
     pyplot.plot(history.history['accuracy'])
     pyplot.plot(history.history['val_accuracy'])
@@ -554,9 +589,10 @@ def parse_args():
                         dest="fp", const=True)
     parser.add_argument('-m', '--model', action='store',
                         type=str, help='The model to receive.')
-
     parser.add_argument('-k', '--kfold', type=int,
                         default=10, help="Kfold cross validation")
+
+    parser.add_argument('--hypertune',action="store_true", help="Should hypertune parameter")
     parser.add_argument('--batch', type=int, default=64, help="Batch size")
     parser.add_argument('--metadata',action="store_true", help="Use metadata")
     args = parser.parse_args()
@@ -593,11 +629,11 @@ def hypertune(X_train,y_train, X_test, y_test):
                          max_trials=10,
                          executions_per_trial=3,
                          directory='tuner1',
-                         project_name='Clothing2')
+                         project_name='Clothing4')
                          
-    # es = EarlyStopping(monitor='val_accuracy', mode='max', patience=20)
+    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
 
-    tuner.search(X_train,y_train,epochs=100,validation_data=(X_test,y_test),callbacks=[])
+    tuner.search(X_train,y_train,epochs=300,validation_data=(X_test,y_test),callbacks=[es])
     tuner.results_summary()
 
     print(tuner.get_best_hyperparameters(1))
@@ -657,7 +693,6 @@ def main():
         test_repos = []
 
         vuln_counter = 0
-        random.shuffle(all_repos)
         for repo in all_repos:
             if(vuln_counter < validation_size):
                 logger.debug(f"Train - {repo.file}")
@@ -681,8 +716,8 @@ def main():
 
         # X_test, y_test, X_val,y_val = X_val, y_val, X_test, y_test
 
-        hypertune(X_train,y_train, X_test, y_test)
-        return
+        if args.hypertune:
+            return hypertune(X_train,y_train, X_test, y_test)
         model = evaluate_data(X_train, y_train, X_test, y_test,
                               exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model)
 
@@ -691,6 +726,8 @@ def main():
         acc = check_results(X_test, y_test, pred, model, exp_name, args.model)
 
         accuracies.append(acc)
+        random.shuffle(all_repos)
+
 
     print(f"Average accuracy: {np.mean(accuracies)}")
     with open(f"results/{exp_name}_K{args.kfold}.txt", 'w') as mfile:
