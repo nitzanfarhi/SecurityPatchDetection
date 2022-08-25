@@ -94,10 +94,10 @@ def lstm_autoencoder(xshape1, xshape2, optimizer):
 
 def bilstm(xshape1, xshape2, optimizer):
     lstm = Sequential()
-    lstm.add(Bidirectional(LSTM(units=100, activation='tanh', name='first_lstm', input_shape=(xshape1, xshape2), return_sequences=True)))
-    lstm.add(Bidirectional(LSTM(units=50, activation='tanh',return_sequences=True, dropout=0.2)))
-    lstm.add(Bidirectional(LSTM(units=25, activation='tanh',return_sequences=True, dropout=0.2)))
-    lstm.add(Bidirectional(LSTM(units=12, activation='tanh',dropout=0.2)))
+    lstm.add(Bidirectional(LSTM(units=100, activation='tanh', name='first_lstm', input_shape=(xshape1, xshape2),dropout=0.5))) #, return_sequences=True)))
+    #lstm.add(Bidirectional(LSTM(units=50, activation='tanh',return_sequences=True, dropout=0.5)))
+    #lstm.add(Bidirectional(LSTM(units=25, activation='tanh',return_sequences=True, dropout=0.5)))
+    #lstm.add(Bidirectional(LSTM(units=12, activation='tanh',dropout=0.5)))
     lstm.add(Dense(1, activation="sigmoid"))
 
     lstm.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])

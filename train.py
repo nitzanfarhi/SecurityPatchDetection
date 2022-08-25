@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
+from importlib.metadata import metadata
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras.optimizers import SGD, Adam
@@ -203,14 +204,18 @@ def add_metadata(cur_repo,file):
 
         for key,value in cur_metadata.items():
             if key == "languages_edges":
+                continue
                 for lang in all_langs:
                     cur_repo[lang] = 0
                 for lang in value:
                     cur_repo[lang] = 1
 
-            elif key == "createdAt":
+            elif key == "createdAt": # this is probably lower performance
+                continue
                 for i in range(2000,2022):
                     cur_repo["repo_creation_data_"+str(i)] = 0
+                if "repo_creation_data_"+str(parser.parse(value).year) not in cur_repo.columns:
+                    raise Exception("not exist "+str(i))
                 cur_repo["repo_creation_data_"+str(parser.parse(value).year)] = 1
 
             elif key == "fundingLinks":
@@ -232,10 +237,10 @@ def add_metadata(cur_repo,file):
 
         with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
             timezone = int(float(f.read()))
-        for tz in range(-12,15):
-            cur_repo["timezone_"+str(tz)] = 0
+        # for tz in range(-12,15):
+        #     cur_repo["timezone_"+str(tz)] = 0
         
-        cur_repo["timezone_"+str(timezone)] = 1
+        # cur_repo["timezone_"+str(timezone)] = 1
 
         return cur_repo
 
@@ -260,12 +265,12 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
     all_set = set()
     ignored = []
     dirname = make_new_dir_name(
-        aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+        aggr_options, backs, benign_vuln_ratio, days, hours, resample,metadata)
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
 
     counter = 0
-    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs))):
+    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
         if ".csv" not in file:
             continue
         file = file.split(".csv")[0]
@@ -301,10 +306,12 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             ignored.append((file, number_of_vulns))
             continue
 
-        pbar.set_description(f"{file},{number_of_vulns} fix_repo_shape")
-
         if metadata:
+            pbar.set_description(f"{file} - add metadata")
             cur_repo = add_metadata(cur_repo,file)
+
+
+        pbar.set_description(f"{file} - fix_repo_shape")
 
         cur_repo = fix_repo_shape(all_set, cur_repo,metadata=metadata)
 
@@ -380,10 +387,11 @@ def fix_repo_shape(all_set, cur_repo, metadata=False):
 
     # cur_repo = cur_repo[cur_repo.index.notnull()]
     for commit_change in integer_fields:
-        cur_repo[commit_change].fillna(0, inplace=True)
-        cur_repo[commit_change] = cur_repo[commit_change].astype(int)
-        cur_repo[commit_change] = (
-            cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
+        if commit_change in cur_repo.columns:
+            cur_repo[commit_change].fillna(0, inplace=True)
+            cur_repo[commit_change] = cur_repo[commit_change].astype(int)
+            cur_repo[commit_change] = (
+                cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
 
     cur_repo = add_type_one_hot_encoding(cur_repo)
     cur_repo = cur_repo.drop(["type"], axis=1)
@@ -393,16 +401,17 @@ def fix_repo_shape(all_set, cur_repo, metadata=False):
     return cur_repo
 
 
-def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample):
+def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resample,metadata):
     """
     :return: name of the directory to save the data in
     """
+    metadata = "_meta" if metadata else ""
     if aggr_options == Aggregate.before_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata
     elif aggr_options == Aggregate.after_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"+metadata
     elif aggr_options == Aggregate.none:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata
     else:
         raise Exception("Aggr options not supported")
     logger.debug(name_template)
@@ -423,7 +432,7 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     """
 
     dirname = make_new_dir_name(
-        aggr_options, backs, benign_vuln_ratio, days, hours, resample)
+        aggr_options, backs, benign_vuln_ratio, days, hours, resample,metadata)
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
         logger.info(f"Loading Dataset {dirname}")
         all_repos = []
@@ -479,7 +488,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
 
     validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True, batch_size=batch_size,
-                        validation_data=validation_data, callbacks=[mc])
+                        validation_data=validation_data, callbacks=[])
 
     pyplot.plot(history.history['accuracy'])
     pyplot.plot(history.history['val_accuracy'])
@@ -647,6 +656,42 @@ def init():
     os.environ['PYTHONHASHSEED'] = '0'
 
 
+def extract_fp(x_test, y_test, pred, test_details, exp_name,):
+    safe_mkdir("output")
+    safe_mkdir(f"output/{exp_name}")
+
+    summary_md = ""
+    summary_md += f"# {exp_name}\n"
+
+    df = DataFrame(zip(y_test, pred, test_details[:, 0], test_details[:, 1]), columns=[
+                    'real', 'pred', 'file', 'timestamp'])
+
+    fps = df[((df['pred'] > df['real']) & (df['pred'] > 0.5))]
+
+    groups = fps.groupby('file')
+    for name, group in groups:
+        summary_md += f"## {name}\n"
+        summary_md += "\n".join(
+            list(group['timestamp'].apply(lambda x: "* " + str(x[0]))))
+        summary_md += "\n"
+
+    with open(f"output/{exp_name}/summary.md", "w") as f:
+        f.write(summary_md)
+
+    for _, row in tqdm.tqdm(list(fps.iterrows())):
+        if "tensorflow" in row["file"]:
+            logger.debug("Skipping over tf")
+
+            continue
+        commits = acquire_commits(
+            row["file"], row["timestamp"][0], ignore_errors=True)
+        if commits:
+            with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
+                        'w+') as mfile:
+                json.dump(commits, mfile, indent=4, sort_keys=True)
+
+
+
 def main():
     args = parse_args()
     if not args.loglevel:
@@ -686,11 +731,28 @@ def main():
     logger.info(f"Validation size: {validation_size}")
     logger.info(f"Test size: {test_size}")
 
+
+    # 1. choose k fold or hypertune
+    # 2. Take 15% to test
+    # 2. hypertune
+    #   2.1 create train/val
+    #   2.2 hypertune - run hypertune
+    #   2.2 return model for result evaluation (4)
+    # 3. Kfold
+    #   3.1 create train/val 
+    #   3.2 create model
+    #   3.3 run model and receive validation accuracy
+    #   3.4 goto 3.2 k times, than select model with best accuracy and go to results
+    # 4. results
+    #   4.1 run model on test
+    #   4.2 store accuracy and if fp is on run fp
+
     accuracies = []
     for i in range(args.kfold):
         train_repos = []
         validation_repos = []
         test_repos = []
+        random.shuffle(all_repos)
 
         vuln_counter = 0
         for repo in all_repos:
@@ -734,39 +796,7 @@ def main():
         mfile.write(f"Average accuracy: {np.mean(accuracies)}")
 
     if args.fp:
-        safe_mkdir("output")
-        safe_mkdir(f"output/{exp_name}")
-
-        summary_md = ""
-        summary_md += f"# {exp_name}\n"
-
-        df = DataFrame(zip(y_test, pred, test_details[:, 0], test_details[:, 1]), columns=[
-                       'real', 'pred', 'file', 'timestamp'])
-
-        fps = df[((df['pred'] > df['real']) & (df['pred'] > 0.5))]
-
-        groups = fps.groupby('file')
-        for name, group in groups:
-            summary_md += f"## {name}\n"
-            summary_md += "\n".join(
-                list(group['timestamp'].apply(lambda x: "* " + str(x[0]))))
-            summary_md += "\n"
-
-        with open(f"output/{exp_name}/summary.md", "w") as f:
-            f.write(summary_md)
-
-        for _, row in tqdm.tqdm(list(fps.iterrows())):
-            if "tensorflow" in row["file"]:
-                logger.debug("Skipping over tf")
-
-                continue
-            commits = acquire_commits(
-                row["file"], row["timestamp"][0], ignore_errors=True)
-            if commits:
-                with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
-                          'w+') as mfile:
-                    json.dump(commits, mfile, indent=4, sort_keys=True)
-
+            extract_fp(X_test,y_test,pred,test_details,exp_name)
 
 if __name__ == '__main__':
     main()
