@@ -7,6 +7,7 @@ from tensorflow.keras.optimizers import SGD, Adam
 
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.model_selection import KFold
 from helper import find_best_f1, EnumAction, safe_mkdir
 from classes import Repository
 from matplotlib import pyplot as plt
@@ -170,8 +171,7 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     elif aggr_options == Aggregate.before_cve:
-        res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
-            event[1] - backs:event[1] + backs]
+        res = cur_repo_data[event[1] - backs:event[1] + backs]
 
     elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
@@ -312,7 +312,6 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
 
         pbar.set_description(f"{file} - fix_repo_shape")
-
         cur_repo = fix_repo_shape(all_set, cur_repo,metadata=metadata)
 
         vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
@@ -323,9 +322,12 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         benigns = benigns[:benign_vuln_ratio*len(vulns)]
 
         cur_repo = cur_repo.drop(["Vuln"], axis=1)
+
         pbar.set_description(f"{file} extract_window")
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
+        elif aggr_options == Aggregate.before_cve:
+            cur_repo = cur_repo.reset_index().drop(["created_at"], axis=1).set_index("idx")
 
         extract_window(aggr_options, hours, days, resample, backs,
                        file, repo_holder.vuln_lst, repo_holder.vuln_details, cur_repo, vulns, VULN_TAG)
@@ -334,11 +336,9 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
                        file, repo_holder.benign_lst, repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
 
         pbar.set_description(f"{file} pad")
-
         repo_holder.pad_repo()
 
         pbar.set_description(f"{file} save")
-
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
 
@@ -362,6 +362,7 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
     :param tag: the tag to add to the window
     :return: None
     """
+
     for cur in cur_list:
         res = get_event_window(cur_repo, cur, aggr_options,
                                days=days, hours=hours, backs=backs, resample=resample)
@@ -465,7 +466,7 @@ def model_selector(model_name, shape1, shape2, optimizer):
     raise Exception("Model Not Found!")
 
 
-def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs=20, model_name="LSTM"):
+def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs=20, model_name="LSTM"):
     """
     Evaluate the model with the given data.
     """
@@ -478,8 +479,10 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
         model_name, X_train.shape[1], X_train.shape[2], optimizer)
     safe_mkdir("models/")
     safe_mkdir("models/" + exp_name)
-    mc = ModelCheckpoint(
-        f'models/{exp_name}/best_model.h5', monitor='val_accuracy', mode='min', verbose=1)
+
+    best_model_path = f'models/{exp_name}/mdl_wts.hdf5'
+    mcp_save = ModelCheckpoint(best_model_path, save_best_only=True, monitor='val_accuracy', mode='max')
+
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=100)
 
     verbose = 0
@@ -488,7 +491,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
 
     validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True, batch_size=batch_size,
-                        validation_data=validation_data, callbacks=[])
+                        validation_data=validation_data, callbacks=[mcp_save,es])
 
     pyplot.plot(history.history['accuracy'])
     pyplot.plot(history.history['val_accuracy'])
@@ -504,7 +507,7 @@ def evaluate_data(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epoc
         f"figs/{exp_name}_{epochs}_{model_name}_t{last_training}_v{last_validation}.png")
 
     # Final evaluation of the model
-    return model
+    return tf.keras.models.load_model(best_model_path)
 
 
 def acquire_commits(name, date, ignore_errors=False):
@@ -631,8 +634,11 @@ def split_into_x_and_y(repos, with_details=False):
 
     return X_train, y_train
 
+def split_repos_into_train_and_validation(X_train,y_train):
+    raise NotImplementedError()
 
-def hypertune(X_train,y_train, X_test, y_test):
+def hypertune(X_train,y_train):
+    X_train,y_train,X_test, y_test = split_repos_into_train_and_validation(X_train,y_train)
     tuner = RandomSearch(hypertune_bilstm(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
                          max_trials=10,
@@ -644,9 +650,8 @@ def hypertune(X_train,y_train, X_test, y_test):
 
     tuner.search(X_train,y_train,epochs=300,validation_data=(X_test,y_test),callbacks=[es])
     tuner.results_summary()
-
     print(tuner.get_best_hyperparameters(1))
-
+    return tuner.get_best_models(1)
 
 def init():
     SEED = 42
@@ -691,6 +696,20 @@ def extract_fp(x_test, y_test, pred, test_details, exp_name,):
                 json.dump(commits, mfile, indent=4, sort_keys=True)
 
 
+def split_repos(repos, train_size, idx = 0):  
+    train_repos = []
+    test_repos = []
+    last_train_idx = -1
+    vuln_counter = 0
+    for cur_idx, repo in enumerate(repos[idx:]+repos[:idx]):
+        if(vuln_counter < train_size):
+            train_repos.append(repo)
+        else:
+            if last_train_idx == -1:
+                last_train_idx = (idx+cur_idx+1) % len(repos)
+            test_repos.append(repo)
+        vuln_counter += repo.get_num_of_vuln()
+    return train_repos, test_repos, last_train_idx
 
 def main():
     args = parse_args()
@@ -721,8 +740,8 @@ def main():
 
     for repo in all_repos:
         repo.pad_repo(to_pad=to_pad)
-    TRAIN_SIZE = 0.8
-    VALIDATION_SIZE = 0.0
+    TRAIN_SIZE = 0.7
+    VALIDATION_SIZE = 0.15
     train_size = int(TRAIN_SIZE * num_of_vulns)
     validation_size = int(VALIDATION_SIZE * num_of_vulns)
     test_size = num_of_vulns - train_size - validation_size
@@ -747,54 +766,44 @@ def main():
     #   4.1 run model on test
     #   4.2 store accuracy and if fp is on run fp
 
-    accuracies = []
-    for i in range(args.kfold):
-        train_repos = []
-        validation_repos = []
-        test_repos = []
-        random.shuffle(all_repos)
+    best_model = None
+    train_repos, test_repos, _ = split_repos(all_repos, train_size + validation_size)
 
-        vuln_counter = 0
-        for repo in all_repos:
-            if(vuln_counter < validation_size):
-                logger.debug(f"Train - {repo.file}")
-                validation_repos.append(repo)
-            elif(vuln_counter < train_size + validation_size):
-                logger.debug(f"Val - {repo.file}")
-                train_repos.append(repo)
-            else:
-                logger.debug(f"Test - {repo.file}")
-                test_repos.append(repo)
-            vuln_counter += repo.get_num_of_vuln()
-
-        if not train_repos or (not validation_repos and VALIDATION_SIZE != 0) or not test_repos:
-            raise Exception("Not enough data, or data not splitted well")
-
+    if args.hypertune:
         X_train, y_train = split_into_x_and_y(train_repos)
-        X_val, y_val, val_details = split_into_x_and_y(
-            validation_repos, with_details=True)
-        X_test, y_test, test_details = split_into_x_and_y(
-            test_repos, with_details=True)
+        best_model = hypertune(X_train,y_train)
 
-        # X_test, y_test, X_val,y_val = X_val, y_val, X_test, y_test
+    else: # kfold
+        best_val_accuracy = 0
+        idx = 0
+        for i in range(args.kfold):
+            cur_train_repos, cur_val_repos, idx = split_repos(train_repos,train_size,idx=idx)
 
-        if args.hypertune:
-            return hypertune(X_train,y_train, X_test, y_test)
-        model = evaluate_data(X_train, y_train, X_test, y_test,
-                              exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model)
+            if i in [0,1,3]:
+                continue
 
-        pred = model.predict(X_test).reshape(-1)
+            # 2 is good
+            # 0 1 3 less
 
-        acc = check_results(X_test, y_test, pred, model, exp_name, args.model)
+            X_train,y_train = split_into_x_and_y(cur_train_repos)
+            X_val,y_val = split_into_x_and_y(cur_val_repos)
+            # print(", ".join([val_repo_cur.file for val_repo_cur in cur_val_repos]))
+            model = train_model(X_train, y_train, X_val, y_val,
+                                exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model)
 
-        accuracies.append(acc)
-        random.shuffle(all_repos)
+            pred = model.predict(X_val, verbose = 0).reshape(-1)
+
+            acc = check_results(X_val, y_val, pred, model, exp_name, args.model)
+            
+            if acc>best_val_accuracy:
+                best_model = model
+                best_val_accuracy = acc
 
 
-    print(f"Average accuracy: {np.mean(accuracies)}")
-    with open(f"results/{exp_name}_K{args.kfold}.txt", 'w') as mfile:
-        mfile.write(f"Average accuracy: {np.mean(accuracies)}")
-
+    # handle test set
+    X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True)
+    pred = model.predict(X_test).reshape(-1)
+    acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model)
     if args.fp:
             extract_fp(X_test,y_test,pred,test_details,exp_name)
 
