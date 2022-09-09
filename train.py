@@ -93,7 +93,7 @@ def create_all_events(cur_repo_data, gap_days):
     """
     all_events = []
     labels = []
-    for i in range(gap_days, cur_repo_data.shape[0], 1):
+    for i in range(gap_days, cur_repo_data.shape[0]):
         event = cur_repo_data.index[i]
         before_vuln = event - gap_days
         res_event = cur_repo_data[before_vuln:event - 1]
@@ -219,6 +219,8 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
     counter = 0
     for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
+        tqdm_update = lambda cur: pbar.set_description(f"{file} - {cur}")
+
         if ".csv" not in file:
             continue
         file = file.split(".csv")[0]
@@ -226,8 +228,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         repo_holder = Repository()
         repo_holder.file = file
-        pbar.set_description(f"{file} read")
-
+        tqdm_update(f"read")
         if not os.path.exists(repo_dirs+"/"+file+".parquet"):
             try:
                 cur_repo = pd.read_csv(
@@ -255,12 +256,12 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
             continue
 
         if metadata:
-            pbar.set_description(f"{file} - add metadata")
+            tqdm_update("add metadata")
             cur_repo = helper.add_metadata(cur_repo,file)
 
 
-        pbar.set_description(f"{file} - fix_repo_shape")
-        cur_repo = fix_repo_shape(all_set, cur_repo,metadata=metadata)
+        tqdm_update("fix_repo_shape")
+        cur_repo = fix_repo_shape(all_set, cur_repo,metadata=metadata, update = tqdm_update)
 
         vulns = cur_repo.index[cur_repo['Vuln'] == 1].tolist()
         if not len(vulns):
@@ -271,7 +272,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         cur_repo = cur_repo.drop(["Vuln"], axis=1)
 
-        pbar.set_description(f"{file} extract_window")
+        tqdm_update("extract_window")
         if aggr_options == Aggregate.none:
             cur_repo = add_time_one_hot_encoding(cur_repo, with_idx=True)
         elif aggr_options == Aggregate.before_cve:
@@ -283,10 +284,10 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         extract_window(aggr_options, hours, days, resample, backs,
                        file, repo_holder.benign_lst, repo_holder.benign_details, cur_repo, benigns, BENIGN_TAG)
 
-        pbar.set_description(f"{file} pad")
+        tqdm_update("pad")
         repo_holder.pad_repo()
 
-        pbar.set_description(f"{file} save")
+        tqdm_update("save")
         with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl", 'wb') as f:
             pickle.dump(repo_holder, f)
 
@@ -321,10 +322,20 @@ def extract_window(aggr_options, hours, days, resample, backs, file, window_lst,
         details_lst.append(details)
 
 
-def fix_repo_shape(all_set, cur_repo, metadata=False):
+def fix_repo_shape(all_set, cur_repo, metadata=False, update = lambda cur: None):
+    """
+    fixes the shape of the repo
+    :param all_set: the set of all events
+    :param cur_repo: the current repo
+    :return: the fixed repo
+    """
     cur_repo['created_at'] = pd.to_datetime(cur_repo['created_at'], utc=True)
+
+    update("Removed Duplicates")
     cur_repo = cur_repo[~cur_repo.duplicated(
         subset=['created_at', 'Vuln'], keep='first')]
+
+    update("Sorted and managed index")
     cur_repo = cur_repo.set_index(["created_at"])
     cur_repo = cur_repo.sort_index()
     cur_repo = cur_repo[cur_repo.index.notnull()]
@@ -332,11 +343,11 @@ def fix_repo_shape(all_set, cur_repo, metadata=False):
     cur_repo['idx'] = range(len(cur_repo))
     cur_repo = cur_repo.reset_index().set_index(["created_at", "idx"])
 
+    update("Normalizing Data")
     integer_fields = ['Add', 'Del', 'Files']
     if metadata:
         integer_fields += ['diskUsage']
 
-    # cur_repo = cur_repo[cur_repo.index.notnull()]
     for commit_change in integer_fields:
         if commit_change in cur_repo.columns:
             cur_repo[commit_change].fillna(0, inplace=True)
@@ -344,7 +355,10 @@ def fix_repo_shape(all_set, cur_repo, metadata=False):
             cur_repo[commit_change] = (
                 cur_repo[commit_change] - cur_repo[commit_change].mean()) / cur_repo[commit_change].std()
 
+    update("One Hot encoding")
     cur_repo = add_type_one_hot_encoding(cur_repo)
+
+    update("Droping unneeded columns")
     cur_repo = cur_repo.drop(["type"], axis=1)
     cur_repo = cur_repo.drop(["name"], axis=1)
     cur_repo = cur_repo.drop(["Unnamed: 0"], axis=1)
@@ -459,7 +473,7 @@ def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs
 
     optimizer = SGD(learning_rate=0.01, momentum=0.9,
                     nesterov=True, clipnorm=1.)
-    # optimizer = Adam(learning_rate=0.001)
+    optimizer = Adam(learning_rate=0.001)
     # Create the model
     model = model_selector(
         model_name, X_train.shape[1], X_train.shape[2], optimizer)
@@ -491,7 +505,7 @@ def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs
     last_validation = history.history['val_accuracy'][-1]
     pyplot.savefig(
         f"figs/{exp_name}_{epochs}_{model_name}_t{last_training}_v{last_validation}.png")
-    pyplot.show()
+    # pyplot.show()
 
     # Final evaluation of the model
     return tf.keras.models.load_model(best_model_path)
@@ -530,6 +544,8 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
     """
     used_y_test = np.asarray(y_test).astype('float32')
     scores = model.evaluate(X_test, used_y_test, verbose=0)
+    if len(scores) == 1:
+        return 0
     max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
     logger.critical(f"{max_f1}, {thresh},{str(scores[1])}")
     if save:
@@ -604,6 +620,9 @@ def split_into_x_and_y(repos, with_details=False, remove_unimportant_features=Fa
     """
     Split the repos into X and Y.
     """
+    if len(repos) == 0:
+        raise ValueError("No repos to split")
+
     X_train, y_train = [], []
     details = []
     for repo in repos:
@@ -632,12 +651,12 @@ def split_repos_into_train_and_validation(X_train,y_train):
     raise NotImplementedError()
 
 def hypertune(X_train,y_train,X_test,y_test):
-    tuner = RandomSearch(hypertune_conv1d(X_train.shape[1], X_train.shape[2]),
+    tuner = RandomSearch(hypertune_gru(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
                          max_trials=10,
-                         executions_per_trial=3,
+                         executions_per_trial=10,
                          directory='tuner1',
-                         project_name='Clothing1')
+                         project_name='hypertune_gru')
                          
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
 
@@ -647,11 +666,11 @@ def hypertune(X_train,y_train,X_test,y_test):
     return tuner.get_best_models(1)[0]
 
 def init():
-    SEED = 42
+    SEED = 0x1337
     random.seed(SEED)
     np.random.seed(SEED)
     tf.random.set_seed(SEED)
-    os.environ['PYTHONHASHSEED'] = '0'
+    os.environ['PYTHONHASHSEED'] = str(SEED)
 
 
 def extract_fp(x_test, y_test, pred, test_details, exp_name,):
@@ -689,20 +708,19 @@ def extract_fp(x_test, y_test, pred, test_details, exp_name,):
                 json.dump(commits, mfile, indent=4, sort_keys=True)
 
 
-def split_repos(repos, train_size, idx = 0):  
+def split_repos(repos, train_size):  
     train_repos = []
     test_repos = []
-    last_train_idx = -1
     vuln_counter = 0
-    for cur_idx, repo in enumerate(repos[idx:]+repos[:idx]):
+    train_repo_counter = 0
+    for repo in repos:
         if(vuln_counter < train_size):
+            train_repo_counter += 1
             train_repos.append(repo)
         else:
-            if last_train_idx == -1:
-                last_train_idx = (idx+cur_idx+1) % len(repos)
             test_repos.append(repo)
         vuln_counter += repo.get_num_of_vuln()
-    return train_repos, test_repos, last_train_idx
+    return train_repos, test_repos, train_repo_counter
 
 def main():
     args = parse_args()
@@ -725,6 +743,8 @@ def main():
 
     to_pad = 0
     num_of_vulns = 0
+
+    random.shuffle(all_repos)
     all_repos = [repo for repo in all_repos if getattr(repo,"get_num_of_vuln",None) is not None]
 
     for idx,repo in enumerate(all_repos):
@@ -737,8 +757,8 @@ def main():
     for repo in all_repos:
         repo.pad_repo(to_pad=to_pad)
 
-    TRAIN_SIZE = 0.7
-    VALIDATION_SIZE = 0.15
+    TRAIN_SIZE = 0.8
+    VALIDATION_SIZE = 0.1
     train_size = int(TRAIN_SIZE * num_of_vulns)
     validation_size = int(VALIDATION_SIZE * num_of_vulns)
     test_size = num_of_vulns - train_size - validation_size
@@ -774,28 +794,38 @@ def main():
     best_fold_x_val = None
     best_fold_y_val = None
     remove_unimportant = True
-    X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
-    if args.kfold == 1:
-        splits = [(range(train_size), range(train_size, train_size + validation_size))]
-    else:
-        splits = KFold(n_splits = args.kfold).split(X_train,y_train)
 
-    for train, test in splits:
+    for _ in range(args.kfold):
 
-        model = train_model(X_train[train], y_train[train], X_train[test], y_train[test],
+        train_repos, val_repos, num_of_train_repos = split_repos(all_repos, train_size)
+        X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
+        X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=remove_unimportant)
+
+
+
+        print(f"all_repos = {len(all_repos)}, train_repos = {len(train_repos)}, val_repos = {len(val_repos)}")
+        print(f"x_train = {len(X_train)}, y_train = {len(y_train)}, x_val = {len(X_val)}, y_val = {len(y_val)}")
+        print(f"train ratio = {len(y_train[y_train == 1]) / len(y_train[y_train == 0])}")
+        print(f"val ratio = {len(y_val[y_val == 1]) / len(y_val[y_val == 0])}")
+        print(f"train val  ratio = {len(X_train)/len(X_val)}")
+
+        model = train_model(X_train, y_train, X_val, y_val,
                             exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
 
-        pred = model.predict(X_train[test], verbose = 0).reshape(-1)
+        pred = model.predict(X_val, verbose = 0).reshape(-1)
 
-        acc = check_results(X_train[test], y_train[test], pred, model, exp_name, args.model)
+        acc = check_results(X_val, y_val, pred, model, exp_name, args.model)
         
         if acc>best_val_accuracy:
             best_model = model
             best_val_accuracy = acc
-            best_fold_x_train = X_train[train]
-            best_fold_y_train = y_train[train]
-            best_fold_x_val = X_train[test]
-            best_fold_y_val = y_train[test]
+            best_fold_x_train = X_train
+            best_fold_y_train = y_train
+            best_fold_x_val = X_val
+            best_fold_y_val = y_val
+
+        num_of_val_repos = len(all_repos)-num_of_train_repos
+        all_repos = all_repos[-num_of_val_repos:] + all_repos[:-num_of_val_repos]
 
 
     logging.critical(f"Best val accuracy: {best_val_accuracy}")
