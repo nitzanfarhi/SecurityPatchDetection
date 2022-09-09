@@ -714,12 +714,13 @@ def split_repos(repos, train_size):
     vuln_counter = 0
     train_repo_counter = 0
     for repo in repos:
-        if(vuln_counter < train_size):
+        cur_vuln_counter = repo.get_num_of_vuln()
+        if(vuln_counter + cur_vuln_counter < train_size):
             train_repo_counter += 1
             train_repos.append(repo)
         else:
             test_repos.append(repo)
-        vuln_counter += repo.get_num_of_vuln()
+        vuln_counter += cur_vuln_counter
     return train_repos, test_repos, train_repo_counter
 
 def main():
@@ -784,7 +785,7 @@ def main():
     #   4.2 store accuracy and if fp is on run fp
 
     best_model = None
-    train_repos, test_repos, _ = split_repos(all_repos, train_size + validation_size)
+    train_and_val_repos, test_repos, _ = split_repos(all_repos, train_size + validation_size)
 
 
     best_val_accuracy = 0
@@ -795,9 +796,12 @@ def main():
     best_fold_y_val = None
     remove_unimportant = True
 
-    for _ in range(args.kfold):
+    for i in range(args.kfold):
 
-        train_repos, val_repos, num_of_train_repos = split_repos(all_repos, train_size)
+        print(i, len(train_and_val_repos),train_size)
+        if i ==7:
+            print("H")
+        train_repos, val_repos, num_of_train_repos = split_repos(train_and_val_repos, train_size)
         X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
         X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=remove_unimportant)
 
@@ -824,8 +828,8 @@ def main():
             best_fold_x_val = X_val
             best_fold_y_val = y_val
 
-        num_of_val_repos = len(all_repos)-num_of_train_repos
-        all_repos = all_repos[-num_of_val_repos:] + all_repos[:-num_of_val_repos]
+        num_of_val_repos = len(train_and_val_repos)-num_of_train_repos
+        train_and_val_repos = train_and_val_repos[-num_of_val_repos:] + train_and_val_repos[:-num_of_val_repos]
 
 
     logging.critical(f"Best val accuracy: {best_val_accuracy}")
