@@ -14,7 +14,7 @@ from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
 from pandas import DataFrame
-from keras_tuner import RandomSearch
+from keras_tuner import RandomSearch, Hyperband
 
 
 import helper
@@ -651,16 +651,22 @@ def split_repos_into_train_and_validation(X_train,y_train):
     raise NotImplementedError()
 
 def hypertune(X_train,y_train,X_test,y_test):
-    tuner = RandomSearch(hypertune_gru(X_train.shape[1], X_train.shape[2]),
+    tuner = Hyperband(hypertune_conv1d(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
-                         max_trials=10,
+                         # max_trials=10,
                          executions_per_trial=10,
-                         directory='tuner1',
-                         project_name='hypertune_gru')
+                         directory='2',
+                         project_name='hyperband3')
                          
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
 
-    tuner.search(X_train,y_train,epochs=50, validation_data=(X_test, y_test),verbose=0,callbacks=[es])
+    tuner.search(X_train,
+        y_train,
+        batch_size=64,
+        epochs=50,
+        validation_data=(X_test, y_test),
+        verbose=1,
+        callbacks=[es])
     tuner.results_summary()
     print(tuner.get_best_hyperparameters(1))
     return tuner.get_best_models(1)[0]
@@ -797,14 +803,11 @@ def main():
     remove_unimportant = True
 
     for i in range(args.kfold):
-
-        print(i, len(train_and_val_repos),train_size)
-        if i ==7:
-            print("H")
         train_repos, val_repos, num_of_train_repos = split_repos(train_and_val_repos, train_size)
         X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
         X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=remove_unimportant)
 
+        print(i, train_repos[0].file)
 
 
         print(f"all_repos = {len(all_repos)}, train_repos = {len(train_repos)}, val_repos = {len(val_repos)}")
@@ -840,6 +843,8 @@ def main():
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
     pred = best_model.predict(X_test, verbose = 0).reshape(-1)
     acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
+    logging.critical(f"Best val accuracy: {acc}")
+
     if args.fp:
             extract_fp(X_test,y_test,pred,test_details,exp_name)
 

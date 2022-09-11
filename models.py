@@ -2,7 +2,7 @@ import tensorflow as tf
 
 
 from tensorflow.keras.layers import Dense, LSTM, GRU
-from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.optimizers import SGD, Adam, RMSprop, Adagrad
 from tensorflow.keras import Sequential
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
@@ -249,24 +249,43 @@ def conv1d(xshape1, xshape2, optimizer):
 
 def hypertune_conv1d(xshape1, xshape2):
     def build_model(hp):
-        DROPOUT = 0.4
-        deneses2 = hp.Choice('denses2', values=[32, 64, 128, 256])
-        deneses3 = hp.Choice('denses3', values=[16, 32, 64, 128])
+        spe = hp.Choice('steps_per_execution', values=[100, 150, 200])
+        DROPOUT = hp.Choice('dropout', values=[0.2, 0.3, 0.4, 0.5])
+        filters1 = hp.Choice('filters1', values=[64, 128, 256])
+        dense1 = hp.Choice('dense1', values=[256, 512, 1024])
+        dense2 = hp.Choice('dense2', values=[64, 128, 256])
+        dense3 = hp.Choice('dense3', values=[64, 128, 256])
+        lr = hp.Choice('learning_rate', values=[1e-2, 1e-3])
+
+        # Select optimizer    
+        optimizer=hp.Choice('optimizer', values=['adam', 'adagrad', 'SGD'])
+
+        # Conditional for each optimizer
+        if optimizer == 'adam':
+            opt = Adam(learning_rate=lr)    
+        elif optimizer == 'adagrad':
+            opt = Adagrad(learning_rate=lr)
+        elif optimizer == 'SGD':
+            opt = SGD(learning_rate=lr)
+        elif optimizer == 'RMSprop':
+            opt = RMSprop(learning_rate=lr)
+        
         model1 = Sequential()
-        model1.add(Conv1D(filters=64, kernel_size=2, activation='tanh',
-                          input_shape=(xshape1, xshape2)))
+        model1.add(Conv1D(filters=filters1, kernel_size=2, activation='tanh',
+                input_shape=(xshape1, xshape2)))
 
         model1.add(MaxPooling1D(pool_size=2))
         model1.add(Flatten())
-        model1.add(Dense(256, activation='tanh'))
+        model1.add(Dense(dense1, activation='tanh'))
         model1.add(Dropout(DROPOUT))
-        model1.add(Dense(64, activation='tanh'))
+        model1.add(Dense(dense2, activation='tanh'))
         model1.add(Dropout(DROPOUT))
-        model1.add(Dense(64, activation='tanh'))
+        model1.add(Dense(dense3, activation='tanh'))
         model1.add(Dropout(DROPOUT))
         model1.add(Dense(1, activation='sigmoid'))
-        model1.compile(loss='binary_crossentropy', optimizer=Adam(
-            learning_rate=0.001), metrics=['accuracy'])
+        model1.compile(loss='binary_crossentropy',
+                    jit_compile=True, steps_per_execution=spe,optimizer=opt, metrics=['accuracy'])
+
 
         return model1
     return build_model
