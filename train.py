@@ -650,20 +650,20 @@ def split_into_x_and_y(repos, with_details=False, remove_unimportant_features=Fa
 def split_repos_into_train_and_validation(X_train,y_train):
     raise NotImplementedError()
 
-def hypertune(X_train,y_train,X_test,y_test):
+def hypertune(X_train,y_train,X_test,y_test, exp_name):
     tuner = Hyperband(hypertune_conv1d(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
                          # max_trials=10,
                          executions_per_trial=10,
-                         directory='2',
-                         project_name='hyperband3')
+                         directory='hypertune',
+                         project_name=exp_name)
                          
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
 
     tuner.search(X_train,
         y_train,
-        batch_size=64,
-        epochs=50,
+        batch_size=128,
+        epochs=100,
         validation_data=(X_test, y_test),
         verbose=1,
         callbacks=[es])
@@ -837,13 +837,13 @@ def main():
 
     logging.critical(f"Best val accuracy: {best_val_accuracy}")
     if args.hypertune:
-        best_model = hypertune(best_fold_x_train,best_fold_y_train,best_fold_x_val, best_fold_y_val)
+        best_model = hypertune(best_fold_x_train,best_fold_y_train,best_fold_x_val, best_fold_y_val, exp_name)
     
     # handle test set
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
     pred = best_model.predict(X_test, verbose = 0).reshape(-1)
     acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
-    logging.critical(f"Best val accuracy: {acc}")
+    logging.critical(f"Best test accuracy: {acc}")
 
     if args.fp:
             extract_fp(X_test,y_test,pred,test_details,exp_name)
