@@ -69,27 +69,6 @@ def super_complicated(xshape1, xshape2, optimizer):
     return model
 
 
-def conv1dlstm(xshape1, xshape2, optimizer):
-    model = Sequential()
-    model.add(Conv1D(filters=256, kernel_size=5, padding='same', activation='relu',
-                     input_shape=(xshape1, xshape2)))
-    model.add(MaxPooling1D(pool_size=4))
-    model.add(LSTM(64))
-
-    model.add(Dense(200, activation='relu'))
-    model.add(Dropout(0.50))
-    model.add(Dense(50, activation='relu'))
-    model.add(Dropout(0.50))
-    model.add(Dense(25, activation='relu'))
-    model.add(Dropout(0.50))
-    model.add(Dense(1, activation='sigmoid'))
-
-    model.compile(optimizer=optimizer,
-                  loss='binary_crossentropy', metrics=["accuracy"])
-
-    return model
-
-
 def conv1d_more_layers(xshape1, xshape2, optimizer):
     conv1d = Sequential()
     conv1d.add(Conv1D(filters=500, kernel_size=2, activation='relu',
@@ -168,23 +147,23 @@ def bigru(xshape1, xshape2, optimizer):
     return lstm
 
 
-def hypertune_bilstm(xshape1, xshape2):
-    def build_model(hp):
-        lstm = Sequential()
-        droupout = hp.Choice('dropout', values=[0.2, 0.3, 0.4, 0.5])
-        lstm.add(Bidirectional(LSTM(units=hp.Int('num_of_neurons', min_value=50, max_value=100, step=10),
-                 activation='tanh', name='first_lstm', input_shape=(xshape1, xshape2), return_sequences=True)))
-        lstm.add(Bidirectional(LSTM(units=50, activation='tanh',
-                 return_sequences=True, dropout=droupout)))
-        lstm.add(Bidirectional(LSTM(units=25, activation='tanh',
-                 return_sequences=True, dropout=droupout)))
-        lstm.add(Bidirectional(
-            LSTM(units=12, activation='tanh', dropout=droupout)))
-        lstm.add(Dense(1, activation="sigmoid"))
-        lstm.compile(loss='binary_crossentropy', optimizer=SGD(
-            hp.Choice('learning_rate', values=[1e-2, 1e-3])), metrics=['accuracy'])
-        return lstm
-    return build_model
+# def hypertune_bilstm(xshape1, xshape2):
+#     def build_model(hp):
+#         lstm = Sequential()
+#         droupout = hp.Choice('dropout', values=[0.2, 0.3, 0.4, 0.5])
+#         lstm.add(Bidirectional(LSTM(units=hp.Int('num_of_neurons', min_value=50, max_value=100, step=10),
+#                  activation='tanh', name='first_lstm', input_shape=(xshape1, xshape2), return_sequences=True)))
+#         lstm.add(Bidirectional(LSTM(units=50, activation='tanh',
+#                  return_sequences=True, dropout=droupout)))
+#         lstm.add(Bidirectional(LSTM(units=25, activation='tanh',
+#                  return_sequences=True, dropout=droupout)))
+#         lstm.add(Bidirectional(
+#             LSTM(units=12, activation='tanh', dropout=droupout)))
+#         lstm.add(Dense(1, activation="sigmoid"))
+#         lstm.compile(loss='binary_crossentropy', optimizer=SGD(
+#             hp.Choice('learning_rate', values=[1e-2, 1e-3])), metrics=['accuracy'])
+#         return lstm
+#     return build_model
 
 
 def gru_cnn(xshape1, xshape2, optimizer='adam', recurrent_units=100, dropout_rate=0.2, recurrent_dropout_rate=0.2, dense_size=100):
@@ -248,6 +227,18 @@ def conv1d(xshape1, xshape2, optimizer):
 
 
 def hypertune_conv1d(xshape1, xshape2):
+    # "steps_per_execution": 150,
+    # "dropout": 0.2,
+    # "filters1": 128,
+    # "dense1": 256,
+    # "dense2": 256,
+    # "dense3": 64,
+    # "learning_rate": 0.01,
+    # "optimizer": "adagrad",
+    # "tuner/epochs": 100,
+    # "tuner/initial_epoch": 0,
+    # "tuner/bracket": 0,
+    # "tuner/round": 0
     def build_model(hp):
         spe = hp.Choice('steps_per_execution', values=[100, 150, 200])
         DROPOUT = hp.Choice('dropout', values=[0.2, 0.3, 0.4, 0.5])
@@ -289,3 +280,78 @@ def hypertune_conv1d(xshape1, xshape2):
 
         return model1
     return build_model
+
+def hypertune_bilstm(xshape1, xshape2):
+    def build_model(hp):
+        spe = hp.Choice('steps_per_execution', values=[100, 150, 200])
+        DROPOUT = hp.Choice('dropout1', values=[0.2, 0.3, 0.4, 0.5])
+        DROPOUT2 = hp.Choice('dropout2', values=[0.2, 0.3, 0.4, 0.5])
+        filters1 = hp.Choice('filters1', values=[64, 128, 256])
+        dense1 = hp.Choice('dense1', values=[256, 512, 1024])
+        dense2 = hp.Choice('dense2', values=[64, 128, 256])
+        dense3 = hp.Choice('dense3', values=[64, 128, 256])
+        lr = hp.Choice('learning_rate', values=[1e-2, 1e-3])
+
+        # Select optimizer    
+        optimizer=hp.Choice('optimizer', values=['adam', 'adagrad', 'SGD'])
+
+        # Conditional for each optimizer
+        if optimizer == 'adam':
+            opt = Adam(learning_rate=lr)    
+        elif optimizer == 'adagrad':
+            opt = Adagrad(learning_rate=lr)
+        elif optimizer == 'SGD':
+            opt = SGD(learning_rate=lr)
+        elif optimizer == 'RMSprop':
+            opt = RMSprop(learning_rate=lr)
+        
+        lstm = Sequential()
+        lstm.add(Bidirectional(LSTM(units=dense1, activation='tanh', name='first_lstm',
+             input_shape=(xshape1, xshape2), return_sequences=True, dropout = DROPOUT2)))
+
+        lstm.add(Dropout(DROPOUT))
+
+        lstm.add(Bidirectional(LSTM(units=dense2, activation='tanh', name='first_lstm',
+             input_shape=(xshape1, xshape2), return_sequences=True, dropout = DROPOUT2)))
+
+        lstm.add(Dropout(DROPOUT))
+
+
+        lstm.add(Bidirectional(LSTM(units=dense2, activation='tanh', name='first_lstm',
+             input_shape=(xshape1, xshape2), dropout = DROPOUT2)))
+
+        lstm.add(Dropout(DROPOUT))
+
+        lstm.add(Dense(1, activation='sigmoid'))
+
+        lstm.compile(loss='binary_crossentropy',
+                    jit_compile=True, steps_per_execution=spe,optimizer=opt, metrics=['accuracy'])
+
+
+        return lstm
+    return build_model
+
+
+
+
+def conv1dlstm(xshape1, xshape2, optimizer):
+    model = Sequential()
+    DROPOUT = 0.2
+
+    model.add(Conv1D(filters=128, kernel_size=2, activation='tanh',
+                     input_shape=(xshape1, xshape2)))
+    model.add(MaxPooling1D(pool_size=2))
+    model.add(GRU(128))
+
+    model.add(Dense(256, activation='relu'))
+    model.add(Dropout(DROPOUT))
+    model.add(Dense(256, activation='relu'))
+    model.add(Dropout(DROPOUT))
+    model.add(Dense(64, activation='relu'))
+    model.add(Dropout(DROPOUT))
+    model.add(Dense(1, activation='sigmoid'))
+    opt = SGD(learning_rate=0.01)
+    model.compile(optimizer=opt, # jit_compile=True, steps_per_execution=150,
+                  loss='binary_crossentropy', metrics=["accuracy"])
+
+    return model

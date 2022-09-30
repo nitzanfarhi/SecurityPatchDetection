@@ -417,18 +417,6 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
 
 
 def model_selector(model_name, shape1, shape2, optimizer):
-    if model_name == "lstm":
-        return lstm(shape1, shape2, optimizer)
-    if model_name == "conv1d":
-        return conv1d(shape1, shape2, optimizer)
-    if model_name == "conv1dlstm":
-        return conv1dlstm(shape1, shape2, optimizer)
-    if model_name == "lstm_autoencoder":
-        return lstm_autoencoder(shape1, shape2, optimizer)
-    if model_name == "bilstm":
-        return bilstm(shape1, shape2, optimizer)
-    if model_name == "bigru":
-        return bigru(shape1, shape2, optimizer)
     return getattr(models,model_name)(shape1,shape2,optimizer)
 
 
@@ -576,7 +564,7 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
         plt.ylim([0.0, 1.05])
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
-        plt.title("Receiver operating characteristic example")
+        plt.title("Receiver operating characteristic")
         plt.legend(loc="lower right")
         plt.savefig(f"figs/auc_{exp_name}_{roc_auc['micro']}.png")
 
@@ -651,7 +639,7 @@ def split_repos_into_train_and_validation(X_train,y_train):
     raise NotImplementedError()
 
 def hypertune(X_train,y_train,X_test,y_test, exp_name):
-    tuner = Hyperband(hypertune_conv1d(X_train.shape[1], X_train.shape[2]),
+    tuner = Hyperband(hypertune_bilstm(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
                          # max_trials=10,
                          executions_per_trial=10,
@@ -665,7 +653,7 @@ def hypertune(X_train,y_train,X_test,y_test, exp_name):
         batch_size=128,
         epochs=100,
         validation_data=(X_test, y_test),
-        verbose=1,
+        verbose=0,
         callbacks=[es])
     tuner.results_summary()
     print(tuner.get_best_hyperparameters(1))
@@ -807,14 +795,12 @@ def main():
         X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
         X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=remove_unimportant)
 
-        print(i, train_repos[0].file)
-
-
-        print(f"all_repos = {len(all_repos)}, train_repos = {len(train_repos)}, val_repos = {len(val_repos)}")
-        print(f"x_train = {len(X_train)}, y_train = {len(y_train)}, x_val = {len(X_val)}, y_val = {len(y_val)}")
-        print(f"train ratio = {len(y_train[y_train == 1]) / len(y_train[y_train == 0])}")
-        print(f"val ratio = {len(y_val[y_val == 1]) / len(y_val[y_val == 0])}")
-        print(f"train val  ratio = {len(X_train)/len(X_val)}")
+        # print(i, train_repos[0].file)
+        # print(f"all_repos = {len(all_repos)}, train_repos = {len(train_repos)}, val_repos = {len(val_repos)}")
+        # print(f"x_train = {len(X_train)}, y_train = {len(y_train)}, x_val = {len(X_val)}, y_val = {len(y_val)}")
+        # print(f"train ratio = {len(y_train[y_train == 1]) / len(y_train[y_train == 0])}")
+        # print(f"val ratio = {len(y_val[y_val == 1]) / len(y_val[y_val == 0])}")
+        # print(f"train val  ratio = {len(X_train)/len(X_val)}")
 
         model = train_model(X_train, y_train, X_val, y_val,
                             exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
@@ -837,7 +823,7 @@ def main():
 
     logging.critical(f"Best val accuracy: {best_val_accuracy}")
     if args.hypertune:
-        best_model = hypertune(best_fold_x_train,best_fold_y_train,best_fold_x_val, best_fold_y_val, exp_name)
+        best_model = hypertune(best_fold_x_train,best_fold_y_train,best_fold_x_val, best_fold_y_val, exp_name+f"_{args.model}")
     
     # handle test set
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
