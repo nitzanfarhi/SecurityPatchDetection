@@ -5,16 +5,19 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras.optimizers import SGD, Adam
 
+
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
-from helper import find_best_f1, EnumAction, safe_mkdir
-from classes import Repository
+from sklearn.model_selection import train_test_split
+from helper import find_best_acc, find_best_f1, EnumAction, safe_mkdir
+from helper import Repository, bool_metadata
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
 from pandas import DataFrame
 from keras_tuner import RandomSearch, Hyperband
+from dateutil import parser
 
 
 import helper
@@ -155,12 +158,12 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     :return: a window for lstm
     """
     befs = -1
-    hours_befs = 2
-
     if aggr_options == Aggregate.after_cve:
         cur_repo_data = cur_repo_data.reset_index().drop(
             ["idx"], axis=1).set_index("created_at")
         cur_repo_data = cur_repo_data.sort_index()
+        hours_befs = 2
+
         indicator = event[0] - datetime.timedelta(days=0, hours=hours_befs)
         starting_time = indicator - datetime.timedelta(days=days, hours=hours)
         res = cur_repo_data[starting_time:indicator]
@@ -216,7 +219,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
         aggr_options, backs, benign_vuln_ratio, days, hours, resample,metadata,comment)
     safe_mkdir("ready_data")
     safe_mkdir("ready_data/" + dirname)
-
+  
     counter = 0
     for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
         tqdm_update = lambda cur: pbar.set_description(f"{file} - {cur}")
@@ -228,7 +231,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         repo_holder = Repository()
         repo_holder.file = file
-        tqdm_update(f"read")
+        tqdm_update("read")
         if not os.path.exists(repo_dirs+"/"+file+".parquet"):
             try:
                 cur_repo = pd.read_csv(
@@ -238,7 +241,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
                     dtype={"type": "string", "name": "string", "Hash": "string", "Add":  np.float64, "Del":  np.float64, "Files": np.float64, "Vuln":  np.float64})
             except pd.errors.EmptyDataError:
                 continue
-            
+
             cur_repo.to_parquet(repo_dirs + "/" + file+".parquet")
 
         else:
@@ -257,7 +260,7 @@ def create_dataset(aggr_options, benign_vuln_ratio, hours, days, resample, backs
 
         if metadata:
             tqdm_update("add metadata")
-            cur_repo = helper.add_metadata(cur_repo,file)
+            cur_repo = helper.add_metadata(cur_repo,file, repo_holder)
 
 
         tqdm_update("fix_repo_shape")
@@ -372,12 +375,12 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
     """
     comment = "_"+comment if comment else ""
     metadata = "_meta" if metadata else ""
-    if aggr_options == Aggregate.before_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata+comment
+    if aggr_options == Aggregate.before_cve or aggr_options != Aggregate.after_cve and aggr_options == Aggregate.none:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}" + comment
+
     elif aggr_options == Aggregate.after_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"+metadata+comment
-    elif aggr_options == Aggregate.none:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata+comment
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}" + comment
+
     else:
         raise Exception("Aggr options not supported")
     logger.debug(name_template)
@@ -426,7 +429,7 @@ def feature_importance(model, X_train, columns):
     regressor = model
     random_ind = np.random.choice(X_train.shape[0], 1000, replace=False)
     print(random_ind)
-    data = X_train[random_ind[0:500]]
+    data = X_train[random_ind[:500]]
     e = shap.DeepExplainer((regressor.layers[0].input, regressor.layers[-1].output),data)
     test1 = X_train[random_ind[500:1000]]
     shap_val = e.shap_values(test1)
@@ -454,11 +457,13 @@ def feature_importance(model, X_train, columns):
     with open("tmpsum",'wb') as mfile:
         np.save(mfile,sum_0)
 
-def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs=20, model_name="LSTM", columns = []):
+def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32, epochs=20, model_name="LSTM", columns=None):
     """
     Evaluate the model with the given data.
     """
 
+    if columns is None:
+        columns = []
     optimizer = SGD(learning_rate=0.01, momentum=0.9,
                     nesterov=True, clipnorm=1.)
     optimizer = Adam(learning_rate=0.001)
@@ -473,10 +478,7 @@ def train_model(X_train, y_train, X_val, y_val, exp_name, batch_size=32,  epochs
 
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=500)
 
-    verbose = 0
-    if logger.level < logging.CRITICAL:
-        verbose = 1
-
+    verbose = 1 if logger.level < logging.CRITICAL else 0
     validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train, y_train, verbose=verbose, epochs=epochs, shuffle=True, batch_size=batch_size,
                         validation_data=validation_data, callbacks=[mcp_save])
@@ -515,14 +517,12 @@ def acquire_commits(name, date, ignore_errors=False):
                                                 (date + datetime.timedelta(days=1)
                                                  ).strftime(github_format)
                                                 ), ignore_errors=ignore_errors)
-        if "data" in res:
-            if "repository" in res["data"]:
-                if "object" in res['data']['repository']:
-                    obj = res['data']['repository']['object']
-                    if obj is None:
-                        continue
-                    if "history" in obj:
-                        return res['data']['repository']['object']['history']['nodes']
+        if "data" in res and "repository" in res["data"] and "object" in res['data']['repository']:
+            obj = res['data']['repository']['object']
+            if obj is None:
+                continue
+            if "history" in obj:
+                return res['data']['repository']['object']['history']['nodes']
     return ""
 
 
@@ -531,29 +531,27 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
     Check the results of the model.
     """
     used_y_test = np.asarray(y_test).astype('float32')
-    scores = model.evaluate(X_test, used_y_test, verbose=0)
-    if len(scores) == 1:
-        return 0
-    max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
-    logger.critical(f"{max_f1}, {thresh},{str(scores[1])}")
+    max_acc, acc_thresh  = find_best_acc(X_test, used_y_test,model,  verbose=0)
+    max_f1, f1_thresh  = find_best_f1(X_test, used_y_test, model)
+    logger.critical(f"Accuracy: {max_acc}, F1-Score: {max_f1}")
+
     if save:
         with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
-            mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
+            mfile.write('Accuracy: %.2f%%\n' % (max_acc * 100))
             mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
             mfile.write('confusion matrix:\n')
-            tn, fp, fn, tp = confusion_matrix(y_test, pred > thresh).ravel()
+            tn, fp, fn, tp = confusion_matrix(y_test, pred > acc_thresh / 100).ravel()
             conf_matrix = f"tn={tn}, fp={fp}, fn={fn}, tp={tp}"
             mfile.write(conf_matrix)
 
-            logger.critical('Accuracy: %.2f%%' % (scores[1] * 100))
+            logger.critical('Accuracy: %.2f%%' % (max_acc * 100))
             logger.critical('fscore: %.2f%%' % (max_f1 * 100))
             logger.critical(str(conf_matrix))
 
-        fpr = dict()
-        tpr = dict()
-        roc_auc = dict()
+        fpr = {}
+        tpr = {}
         fpr["micro"], tpr["micro"], _ = roc_curve(used_y_test, pred)
-        roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+        roc_auc = {"micro": auc(fpr["micro"], tpr["micro"])}
         plt.figure()
         lw = 2
 
@@ -568,7 +566,7 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
         plt.legend(loc="lower right")
         plt.savefig(f"figs/auc_{exp_name}_{roc_auc['micro']}.png")
 
-    return scores[1]
+    return max_acc
 
 
 def parse_args():
@@ -600,8 +598,10 @@ def parse_args():
     parser.add_argument('--hypertune',action="store_true", help="Should hypertune parameter")
     parser.add_argument('--batch', type=int, default=64, help="Batch size")
     parser.add_argument('--metadata',action="store_true", help="Use metadata")
-    args = parser.parse_args()
-    return args
+    parser.add_argument('--submodels',action="store_true", help="Use metadata")
+    parser.add_argument('--merge-all',action="store_true", help="Merge all repositories before splitting into sets")
+
+    return parser.parse_args()
 
 
 def split_into_x_and_y(repos, with_details=False, remove_unimportant_features=False):
@@ -660,12 +660,26 @@ def hypertune(X_train,y_train,X_test,y_test, exp_name):
     return tuner.get_best_models(1)[0]
 
 def init():
-    SEED = 0x1337
+    SEED = 0x0
     random.seed(SEED)
     np.random.seed(SEED)
     tf.random.set_seed(SEED)
     os.environ['PYTHONHASHSEED'] = str(SEED)
 
+
+def analyze_repos(y_test, pred, details):
+    df = DataFrame(zip(y_test, pred, details[:, 0], details[:, 1]), columns=[
+                    'real', 'pred', 'file', 'timestamp'])
+
+    m_name, m_group, m_fps, m_fns = [],[],[],[]
+    for name, group in df.groupby('file'):
+        group_fps = group[(group['pred'] > group['real']) & (group['pred'] > 0.5)]
+        group_fns = group[(group['pred'] < group['real']) & (group['pred'] <= 0.5)]
+        m_name.append(name)
+        m_group.append(len(group))
+        m_fps.append(len(group_fps))
+        m_fns.append(len(group_fns))
+    return pd.DataFrame({"name":m_name,"group":m_group,"fps":m_fps,"fns":m_fns})
 
 def extract_fp(x_test, y_test, pred, test_details, exp_name,):
     safe_mkdir("output")
@@ -677,13 +691,12 @@ def extract_fp(x_test, y_test, pred, test_details, exp_name,):
     df = DataFrame(zip(y_test, pred, test_details[:, 0], test_details[:, 1]), columns=[
                     'real', 'pred', 'file', 'timestamp'])
 
-    fps = df[((df['pred'] > df['real']) & (df['pred'] > 0.5))]
-
+    fps = df[(df['pred'] > df['real']) & (df['pred'] > 0.5)]
+    
     groups = fps.groupby('file')
     for name, group in groups:
         summary_md += f"## {name}\n"
-        summary_md += "\n".join(
-            list(group['timestamp'].apply(lambda x: "* " + str(x[0]))))
+        summary_md += "\n".join(list(group['timestamp'].apply(lambda x: f"* {str(x[0])}")))
         summary_md += "\n"
 
     with open(f"output/{exp_name}/summary.md", "w") as f:
@@ -694,9 +707,7 @@ def extract_fp(x_test, y_test, pred, test_details, exp_name,):
             logger.debug("Skipping over tf")
 
             continue
-        commits = acquire_commits(
-            row["file"], row["timestamp"][0], ignore_errors=True)
-        if commits:
+        if commits := acquire_commits(row["file"], row["timestamp"][0], ignore_errors=True):
             with open(f'output/{exp_name}/{row["file"]}_{row["timestamp"][0].strftime("%Y-%m-%d")}.json',
                         'w+') as mfile:
                 json.dump(commits, mfile, indent=4, sort_keys=True)
@@ -717,15 +728,93 @@ def split_repos(repos, train_size):
         vuln_counter += cur_vuln_counter
     return train_repos, test_repos, train_repo_counter
 
+def test_submodels(all_repos, exp_name, columns, args):
+    logging.critical("--- Checking Boolean Variables ---")
+    test_bool(all_repos, exp_name, columns, args)
+    logging.critical("--- Checking Hour Ranges ---")
+    test_hour_ranges(all_repos, exp_name, columns, args)
+    logging.critical("--- Checking Programming Languages ---")
+    test_languages(all_repos, exp_name, columns, args)
+
+def test_repos(repos, exp_name,columns,args, train_size=0.7):
+    if not repos:
+        return 0
+    train_size = sum(repo.get_num_of_vuln() for repo in repos) * train_size    
+    train_repos, val_repos, _ = split_repos(repos, train_size)
+    if not train_repos or not val_repos:
+        return 0
+    X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=True)
+    X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=True)
+
+    model = train_model(X_train, y_train, X_val, y_val,
+                    exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
+
+    pred = model.predict(X_val, verbose = 0).reshape(-1)
+    return check_results(X_val, y_val, pred, model, exp_name, args.model)
+
+
+def test_bool(all_repos, exp_name, columns, args):
+    for bool in bool_metadata:
+        falses, trues = [], []
+        for repo in all_repos:
+            if bool in repo.metadata and repo.metadata[bool]:
+                trues.append(repo)
+            else:
+                falses.append(repo)
+        true_acc = test_repos(trues,exp_name,columns,args)
+        false_acc = test_repos(falses,exp_name,columns,args)
+        logging.critical(f"--- {bool} --- True: {true_acc} False: {false_acc}")
+
+def test_languages(all_repos, exp_name, columns, args):
+    languages = ["PHP","HTML", "JavaScript", "C", "C++", "Perl", "Python"]
+    for language in languages:
+        repos = [repo for repo in all_repos if language in repo.metadata["languages_edges"]]
+        train_size = sum(repo.get_num_of_vuln() for repo in repos) * 0.7
+        train_repos, val_repos, _ = split_repos(repos, train_size)
+        X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=True)
+        X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=True)
+
+        model = train_model(X_train, y_train, X_val, y_val,
+                        exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
+
+        pred = model.predict(X_val, verbose = 0).reshape(-1)
+
+        acc = check_results(X_val, y_val, pred, model, exp_name, args.model)
+        print(language)
+        print(acc)
+            
+
+def test_hour_ranges(all_repos, exp_name, columns, args):
+    hour_ranges = [(-12,-7),(-6,-1),(0,0),(1,1),(2,2,),(3,7),(8,14)]
+    hour_repo_array = [[] for _ in range(len(hour_ranges))]
+    for repo in all_repos:
+        timezone = repo.metadata["timezone"]
+        for rng in hour_ranges:
+            if timezone >= rng[0] and timezone <= rng[1]:
+                hour_repo_array[hour_ranges.index(rng)].append(repo)
+                break
+    for idx, repos in enumerate(hour_repo_array):
+        train_size = sum(repo.get_num_of_vuln() for repo in repos) * 0.7
+        train_repos, val_repos, _ = split_repos(repos, train_size)
+        X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=True)
+        X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=True)
+
+        model = train_model(X_train, y_train, X_val, y_val,
+                        exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
+
+        pred = model.predict(X_val, verbose = 0).reshape(-1)
+
+        acc = check_results(X_val, y_val, pred, model, exp_name, args.model)
+        print(hour_ranges[idx])
+        print(acc)
+
+
+
 def main():
     args = parse_args()
-    if not args.loglevel:
-        logger.level = logging.CRITICAL
-    else:
-        logger.level = args.loglevel
-
+    logger.level = args.loglevel or logging.CRITICAL
     init()
-
+    print(args.fp)
     all_repos, exp_name, columns = extract_dataset(aggr_options=args.aggr,
                                           resample=args.resample,
                                           benign_vuln_ratio=args.ratio,
@@ -736,24 +825,13 @@ def main():
                                           metadata = args.metadata,
                                           comment=args.comment)
 
-    to_pad = 0
-    num_of_vulns = 0
+    all_repos, num_of_vulns = pad_and_fix(all_repos)
 
-    random.shuffle(all_repos)
-    all_repos = [repo for repo in all_repos if getattr(repo,"get_num_of_vuln",None) is not None]
+    if args.submodels:
+        return test_submodels(all_repos, exp_name, columns, args)
 
-    for idx,repo in enumerate(all_repos):
-        num_of_vulns += repo.get_num_of_vuln()
-        if len(repo.get_all_lst()[0].shape) > 1:
-            to_pad = max(to_pad, repo.get_all_lst()[0].shape[1])
-        else:
-            all_repos.remove(repo)
-
-    for repo in all_repos:
-        repo.pad_repo(to_pad=to_pad)
-
-    TRAIN_SIZE = 0.8
-    VALIDATION_SIZE = 0.1
+    TRAIN_SIZE = 0.7
+    VALIDATION_SIZE = 0.15
     train_size = int(TRAIN_SIZE * num_of_vulns)
     validation_size = int(VALIDATION_SIZE * num_of_vulns)
     test_size = num_of_vulns - train_size - validation_size
@@ -762,7 +840,32 @@ def main():
     logger.info(f"Validation size: {validation_size}")
     logger.info(f"Test size: {test_size}")
 
+    if args.merge_all:
+        best_val_accuracy = 0
+        x_all,y_all = split_into_x_and_y(all_repos, remove_unimportant_features=False)
+        X_train, X_test, y_train, y_test = train_test_split(x_all, y_all, test_size=0.2, random_state=42)
+        kf = KFold(n_splits=args.kfold, random_state=42, shuffle=True)
+        for train_index, test_index in kf.split(X_train):
+            cur_X_train, X_val = X_train[train_index], X_train[test_index]
+            cur_y_train, y_val = y_train[train_index], y_train[test_index]
+            model = train_model(cur_X_train, cur_y_train, X_val, y_val,
+                            exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
 
+            pred = model.predict(X_test, verbose = 0).reshape(-1)
+            acc = check_results(X_test, y_test, pred, model, exp_name, args.model)
+            if acc>best_val_accuracy:
+                best_model = model
+                best_val_accuracy = acc
+                best_fold_x_train = cur_X_train
+                best_fold_y_train = cur_y_train
+                best_fold_x_val = X_val
+                best_fold_y_val = y_val
+
+        # handle test set
+        pred = best_model.predict(X_test, verbose = 0).reshape(-1)
+        acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
+        logging.critical(f"Best test accuracy: {acc}")
+        return 
     # 1. choose k fold or hypertune
     # 2. Take 15% to test
     # 2. hypertune
@@ -790,17 +893,10 @@ def main():
     best_fold_y_val = None
     remove_unimportant = True
 
-    for i in range(args.kfold):
+    for _ in range(args.kfold):
         train_repos, val_repos, num_of_train_repos = split_repos(train_and_val_repos, train_size)
         X_train,y_train = split_into_x_and_y(train_repos, remove_unimportant_features=remove_unimportant)
         X_val,y_val = split_into_x_and_y(val_repos, remove_unimportant_features=remove_unimportant)
-
-        # print(i, train_repos[0].file)
-        # print(f"all_repos = {len(all_repos)}, train_repos = {len(train_repos)}, val_repos = {len(val_repos)}")
-        # print(f"x_train = {len(X_train)}, y_train = {len(y_train)}, x_val = {len(X_val)}, y_val = {len(y_val)}")
-        # print(f"train ratio = {len(y_train[y_train == 1]) / len(y_train[y_train == 0])}")
-        # print(f"val ratio = {len(y_val[y_val == 1]) / len(y_val[y_val == 0])}")
-        # print(f"train val  ratio = {len(X_train)/len(X_val)}")
 
         model = train_model(X_train, y_train, X_val, y_val,
                             exp_name, batch_size=args.batch, epochs=args.epochs, model_name=args.model, columns = columns)
@@ -808,7 +904,7 @@ def main():
         pred = model.predict(X_val, verbose = 0).reshape(-1)
 
         acc = check_results(X_val, y_val, pred, model, exp_name, args.model)
-        
+
         if acc>best_val_accuracy:
             best_model = model
             best_val_accuracy = acc
@@ -824,15 +920,33 @@ def main():
     logging.critical(f"Best val accuracy: {best_val_accuracy}")
     if args.hypertune:
         best_model = hypertune(best_fold_x_train,best_fold_y_train,best_fold_x_val, best_fold_y_val, exp_name+f"_{args.model}")
-    
+
     # handle test set
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
     pred = best_model.predict(X_test, verbose = 0).reshape(-1)
     acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
     logging.critical(f"Best test accuracy: {acc}")
 
+
     if args.fp:
             extract_fp(X_test,y_test,pred,test_details,exp_name)
+
+def pad_and_fix(all_repos):
+    to_pad = 0
+    num_of_vulns = 0
+    random.shuffle(all_repos)
+    all_repos = [repo for repo in all_repos if getattr(repo,"get_num_of_vuln",None) is not None]
+
+    for repo in all_repos:
+        num_of_vulns += repo.get_num_of_vuln()
+        if len(repo.get_all_lst()[0].shape) > 1:
+            to_pad = max(to_pad, repo.get_all_lst()[0].shape[1])
+        else:
+            all_repos.remove(repo)
+
+    for repo in all_repos:
+        repo.pad_repo(to_pad=to_pad)
+    return all_repos, num_of_vulns
 
 if __name__ == '__main__':
     main()

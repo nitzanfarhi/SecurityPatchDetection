@@ -1,3 +1,4 @@
+import contextlib
 from functools import wraps
 from time import time
 import itertools
@@ -13,8 +14,48 @@ import argparse
 import enum
 import json
 from hiddenCVE.graphql import all_langs
-
 from dateutil import parser
+from collections import Counter
+import numpy as np
+
+
+
+
+
+class Repository:
+    def __init__(self):
+        self.vuln_lst = []
+        self.benign_lst = []
+        self.vuln_details = []
+        self.benign_details = []
+        self.file = ""
+        self.metadata = None
+
+    def pad_repo(self,to_pad=None):
+        padded_vuln_all, padded_benign_all = [], []
+        if to_pad is None:
+            to_pad = max(max(Counter([v.shape[0] for v in self.vuln_lst])),
+                         max(Counter([v.shape[0] for v in self.benign_lst])))
+
+        padded_vuln_all.extend(np.pad(vuln, ((to_pad - vuln.shape[0], 0), (0, 0))) for vuln in self.vuln_lst)
+
+        padded_benign_all.extend(np.pad(benign, ((to_pad - benign.shape[0], 0), (0, 0))) for benign in self.benign_lst)
+
+        self.vuln_lst = np.nan_to_num(np.array(padded_vuln_all))
+        self.benign_lst = np.nan_to_num(np.array(padded_benign_all))
+
+    def get_all_lst(self):
+        X = np.concatenate([self.vuln_lst,self.benign_lst])
+        y = len(self.vuln_lst) * [1] + len(self.benign_lst)*[0]
+        return X, y
+
+    def get_num_of_vuln(self):
+        return len(self.vuln_lst)
+
+    def get_all_details(self):
+        return np.concatenate([self.vuln_details,self.benign_details])
+
+
 
 class EnumAction(argparse.Action):
     """
@@ -52,7 +93,7 @@ def normalize(time_series_feature):
 
 
 def split_sequence(sequence, n_steps):
-    X, y = list(), list()
+    X, y = [], []
     for i in range(len(sequence)):
         # find the end of this pattern
         end_ix = i + n_steps
@@ -96,6 +137,18 @@ def draw_timeline(name, vulns, first_date, last_date):
     plt.show()
 
 
+def find_best_acc(X_test, y_test, model, verbose = 0):
+    best_acc = 0
+    best_model = None
+    y_pred = model.predict(X_test, verbose=verbose)
+    best_thresh = 0
+    for i in range(100):
+        acc = a_score(y_test, (y_pred > i / 100).astype(int))
+        if acc > best_acc:
+            best_acc = acc
+            best_thresh = i
+    return best_acc, best_thresh
+
 def find_best_f1(X_test, y_test, model):
     max_f1 = 0
     thresh = 0
@@ -113,7 +166,7 @@ def find_best_f1(X_test, y_test, model):
             max_f1 = cur_f1
             best_y = y_predict
             thresh = i / 100
-    return max_f1, thresh, best_y
+    return max_f1, thresh
 
 
 def find_best_accuracy(X_test, y_test, model):
@@ -146,10 +199,7 @@ def find_threshold(model, x_train_scaled):
     # provides losses of individual instances
     reconstruction_errors = tf.keras.losses.msle(
         reconstructions, x_train_scaled)
-    # threshold for anomaly scores
-    threshold = np.mean(reconstruction_errors.numpy()) + \
-        np.std(reconstruction_errors.numpy())
-    return threshold
+    return np.mean(reconstruction_errors.numpy()) + np.std(reconstruction_errors.numpy())
 
 
 def get_predictions(model, x_test_scaled, threshold):
@@ -160,8 +210,7 @@ def get_predictions(model, x_test_scaled, threshold):
     errors = tf.keras.losses.msle(predictions, x_test_scaled)
     # 0 = anomaly, 1 = normal
     anomaly_mask = pd.Series(errors) > threshold
-    preds = anomaly_mask.map(lambda x: 0.0 if x == True else 1.0)
-    return preds
+    return anomaly_mask.map(lambda x: 0.0 if x == True else 1.0)
 
 
 token = open(r'C:\secrets\github_token.txt', 'r').read()
@@ -198,8 +247,8 @@ def run_query(query, ignore_errors=False):
         if request.status_code == 200:
             return request.json()
         elif request.status_code == 502:
-            raise Exception(
-                "Query failed to run by returning code of {}. {}".format(request.status_code, request, query))
+            raise RuntimeError(f"Query failed to run by returning code of {request.status_code}. {request}")
+
         else:
             request_json = request.json()
             if "errors" in request_json and (
@@ -214,19 +263,17 @@ def run_query(query, ignore_errors=False):
                     continue
                 break
 
-            err_string = "Query failed to run by returning code of {}. {}".format(
-                request.status_code, query)
+            err_string = f"Query failed to run by returning code of {request.status_code}. {query}"
+
             if ignore_errors:
                 print(err_string)
             else:
-                raise Exception(err_string)
+                raise RuntimeError(err_string)
 
 
 def safe_mkdir(dirname):
-    try:
+    with contextlib.suppress(FileExistsError):
         os.mkdir(dirname)
-    except FileExistsError:
-        pass
 
 
 def timing(f):
@@ -245,50 +292,49 @@ all_metadata = json.load(open("hiddenCVE/repo_metadata.json", 'r'))
 
 bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
 
-def add_metadata(cur_repo,file):
-        cur_metadata = all_metadata[file.replace("_","/",1)]
+def add_metadata(cur_repo,file, repo_holder: Repository=None):
+    cur_metadata = all_metadata[file.replace("_","/",1)]
+    if repo_holder is not None:
+        repo_holder.metadata = cur_metadata
+    for key in bool_metadata:
+        cur_repo[key] = 0
+    for key,value in cur_metadata.items():
+        if key == "languages_edges":
+            for lang in all_langs:
+                cur_repo[lang] = 0
+            for lang in value:
+                cur_repo[lang] = 1
 
-        for key in bool_metadata:
-            cur_repo[key] = 0 
-        for key,value in cur_metadata.items():
-            if key == "languages_edges":
-                for lang in all_langs:
-                    cur_repo[lang] = 0
-                for lang in value:
-                    cur_repo[lang] = 1
+        elif key == "createdAt": # this is probably lower performance
+            for i in range(2000,2023):
+                cur_repo[f"repo_creation_data_{str(i)}"] = 0
+            if f"repo_creation_data_{str(parser.parse(value).year)}" not in cur_repo.columns:
+                raise RuntimeError(f"not exist {str(i)}")
+            cur_repo[f"repo_creation_data_{str(parser.parse(value).year)}"] = 1
 
-            elif key == "createdAt": # this is probably lower performance
-                for i in range(2000,2023):
-                    cur_repo["repo_creation_data_"+str(i)] = 0
-                if "repo_creation_data_"+str(parser.parse(value).year) not in cur_repo.columns:
-                    raise Exception("not exist "+str(i))
-                cur_repo["repo_creation_data_"+str(parser.parse(value).year)] = 1
+        elif key == "fundingLinks":
+            cur_repo[key]=len(value)
 
-            elif key == "fundingLinks":
-                cur_repo[key]=len(value)
+        elif key in bool_metadata:
+            cur_repo[key] = int(value) if value else 0
+        elif key in ['primaryLanguage_name', 'primaryLanguage', "owner_company"]:
+            continue
 
-            elif key in bool_metadata:
-                if not value:
-                    cur_repo[key] = 0
-                else:
-                    cur_repo[key]=int(value)
-
-            elif key == 'primaryLanguage_name' or key == 'primaryLanguage' or key == "owner_company":
-                continue
-
-            else:
-                if key not in cur_repo.columns:
-                    print(key)
+        else:
+            if key not in cur_repo.columns:
+                print(key)
 
 
-        with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
-            timezone = int(float(f.read()))
-        for tz in range(-12,15):
-             cur_repo["timezone_"+str(tz)] = 0
-        
-        cur_repo["timezone_"+str(timezone)] = 1
+    with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
+        timezone = int(float(f.read()))
+    if repo_holder is not None:
+        repo_holder.metadata["timezone"] = timezone
+    for tz in range(-12,15):
+        cur_repo[f"timezone_{str(tz)}"] = 0
 
-        return cur_repo
+    cur_repo[f"timezone_{timezone}"] = 1
+
+    return cur_repo
 
 
 all_langs = ['1C Enterprise', 'AGS Script', 'AIDL', 'AMPL', 'ANTLR', 'API Blueprint', 'ASL', 'ASP', 'ASP.NET', 'ActionScript', 'Ada', 'Agda', 'Alloy', 'AngelScript', 'ApacheConf', 'Apex', 'AppleScript', 'Arc', 'AspectJ', 'Assembly', 'Asymptote', 'Augeas', 'AutoHotkey', 'AutoIt', 'Awk', 'BASIC', 'Ballerina', 'Batchfile', 'Berry', 'Bicep', 'Bikeshed', 'BitBake', 'Blade', 'BlitzBasic', 'Boogie', 'Brainfuck', 'Brightscript', 'C', 'C#', 'C++', 'CMake', 'COBOL', 'CSS', 'CUE', 'CWeb', 'Cadence', "Cap'n Proto", 'Ceylon', 'Chapel', 'Charity', 'ChucK', 'Clarion', 'Classic ASP', 'Clean', 'Clojure', 'Closure Templates', 'CodeQL', 'CoffeeScript', 'ColdFusion', 'Common Lisp', 'Common Workflow Language', 'Coq', 'Cuda', 'Cython', 'D', 'DIGITAL Command Language', 'DM', 'DTrace', 'Dart', 'Dhall', 'Dockerfile', 'Dylan', 'E', 'ECL', 'EJS', 'Eiffel', 'Elixir', 'Elm', 'Emacs Lisp', 'EmberScript', 'Erlang', 'Euphoria', 'F#', 'F*', 'FLUX', 'Fancy', 'Faust', 'Filebench WML', 'Fluent', 'Forth', 'Fortran', 'FreeBasic', 'FreeMarker', 'GAP', 'GCC Machine Description', 'GDB', 'GDScript', 'GLSL', 'GSC', 'Game Maker Language', 'Genshi', 'Gherkin', 'Gnuplot', 'Go', 'Golo', 'Gosu', 'Groff', 'Groovy', 'HCL', 'HLSL', 'HTML', 'Hack', 'Haml', 'Handlebars', 'Haskell', 'Haxe', 'Hy', 'IDL', 'IGOR Pro', 'Inform 7', 'Inno Setup', 'Ioke', 'Isabelle', 'Jasmin', 'Java', 'JavaScript', 'JetBrains MPS', 'Jinja', 'Jolie', 'Jsonnet', 'Julia', 'Jupyter Notebook', 'KRL', 'Kotlin', 'LLVM', 'LSL', 'Lasso', 'Latte', 'Less', 'Lex', 'Limbo', 'Liquid', 'LiveScript', 'Logos', 'Lua', 'M', 'M4', 'MATLAB', 'MAXScript', 'MLIR', 'MQL4', 'MQL5', 'Macaulay2', 'Makefile', 'Mako', 'Mathematica', 'Max', 'Mercury', 'Meson', 'Metal', 'Modelica', 'Modula-2', 'Modula-3', 'Module Management System', 'Monkey', 'Moocode', 'MoonScript', 'Motoko', 'Mustache', 'NASL', 'NSIS', 'NewLisp', 'Nextflow', 'Nginx', 'Nim', 'Nit', 'Nix', 'Nu', 'OCaml', 'Objective-C', 'Objective-C++', 'Objective-J', 'Open Policy Agent', 'OpenEdge ABL', 'PEG.js', 'PHP', 'PLSQL', 'PLpgSQL', 'POV-Ray SDL', 'Pan', 'Papyrus', 'Pascal', 'Pawn', 'Perl', 'Perl 6', 'Pike', 'Pony', 'PostScript', 'PowerShell', 'Processing', 'Procfile', 'Prolog', 'Promela', 'Pug', 'Puppet', 'PureBasic', 'PureScript', 'Python', 'QML', 'QMake', 'R', 'RAML', 'REXX', 'RPC', 'RPGLE', 'RUNOFF', 'Racket', 'Ragel', 'Ragel in Ruby Host', 'Raku', 'ReScript', 'Reason', 'Rebol', 'Red', 'Redcode', 'RenderScript', 'Rich Text Format', 'Riot', 'RobotFramework', 'Roff', 'RouterOS Script', 'Ruby', 'Rust', 'SAS', 'SCSS', 'SMT', 'SQLPL', 'SRecode Template', 'SWIG', 'Sage', 'SaltStack', 'Sass', 'Scala', 'Scheme', 'Scilab', 'Shell', 'ShellSession', 'Sieve', 'Slice', 'Slim', 'SmPL', 'Smali', 'Smalltalk', 'Smarty', 'Solidity', 'SourcePawn', 'Stan', 'Standard ML', 'Starlark', 'Stata', 'StringTemplate', 'Stylus', 'SuperCollider', 'Svelte', 'Swift', 'SystemVerilog', 'TLA', 'TSQL', 'Tcl', 'TeX', 'Tea', 'Terra', 'Thrift', 'Turing', 'Twig', 'TypeScript', 'UnrealScript', 'VBA', 'VBScript', 'VCL', 'VHDL', 'Vala', 'Velocity Template Language', 'Verilog', 'Vim Snippet', 'Vim script', 'Visual Basic', 'Visual Basic .NET', 'Volt', 'Vue', 'WebAssembly', 'Wren', 'X10', 'XProc', 'XQuery', 'XS', 'XSLT', 'Xtend', 'YARA', 'Yacc', 'Yul', 'Zeek', 'Zig', 'eC', 'jq', 'kvlang', 'mupad', 'nesC', 'q', 'sed', 'xBase']

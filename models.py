@@ -205,23 +205,23 @@ def hypertune_gru(xshape1, xshape2):
 
 def conv1d(xshape1, xshape2, optimizer):
     model1 = Sequential()
-    DROPOUT = 0.4
-    model1.add(Conv1D(filters=64, kernel_size=2, activation='tanh',
+    DROPOUT = 0.3
+    model1.add(Conv1D(filters=256, kernel_size=2, activation='tanh',
                input_shape=(xshape1, xshape2)))
 
     model1.add(MaxPooling1D(pool_size=2))
     model1.add(Flatten())
-    model1.add(Dense(256, activation='tanh'))
+    model1.add(Dense(1024, activation='tanh'))
     model1.add(Dropout(DROPOUT))
-    model1.add(Dense(64, activation='tanh'))
+    model1.add(Dense(256, activation='tanh'))
     model1.add(Dropout(DROPOUT))
     model1.add(Dense(64, activation='tanh'))
     model1.add(Dropout(DROPOUT))
     model1.add(Dense(1, activation='sigmoid'))
     model1.compile(loss='binary_crossentropy',
-                   jit_compile=True, steps_per_execution=150,
-                   optimizer=Adam(
-                       learning_rate=0.001), metrics=['accuracy'])
+                   jit_compile=True, steps_per_execution=100,
+                   optimizer=Adagrad(
+                       learning_rate=0.01), metrics=['accuracy'])
 
     return model1
 
