@@ -15,6 +15,8 @@ from tensorflow.keras.layers import TimeDistributed
 from tensorflow.keras.layers import Bidirectional
 from tensorflow.keras import Input, layers
 from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Flatten, Bidirectional,Conv1D, BatchNormalization, GlobalAveragePooling1D, Permute, Dropout, GlobalMaxPooling1D
+from tensorflow.keras.layers import Input, PReLU, Dense, LSTM, multiply, concatenate, Activation, GRU, SimpleRNN, Masking, Reshape
 
 
 def lstm(xshape1, xshape2, optimizer):
@@ -166,7 +168,49 @@ def bigru(xshape1, xshape2, optimizer):
 #     return build_model
 
 
-def gru_cnn(xshape1, xshape2, optimizer='adam', recurrent_units=100, dropout_rate=0.2, recurrent_dropout_rate=0.2, dense_size=100):
+
+
+def gru_cnn(xshape1, xshape2, optimizer):
+    inp = Input(shape=(xshape1, xshape2))
+
+    #GRU_part
+    x_r = GRU(100)(inp) # GRU with 8 unrollments
+    x_r = Dropout(0.8)(x_r) # 80% dropout
+
+    model1 = Sequential()
+    DROPOUT = 0.3
+    y_r = Conv1D(filters=256, kernel_size=2, activation='tanh')(inp)
+    y_r = Dropout(DROPOUT)(y_r)
+    y_r = MaxPooling1D(pool_size=2)(y_r)
+    y_r = Flatten()(y_r)
+    y_r = Dense(1024, activation='tanh')(y_r)
+    y_r = Dropout(DROPOUT)(y_r)
+    y_r = Dense(256, activation='tanh')(y_r)
+    y_r = Dropout(DROPOUT)(y_r)
+    y_r = Dense(64, activation='tanh')(y_r)
+    y_r = Dropout(DROPOUT)(y_r)
+    y_r = Dense(1, activation='sigmoid')(y_r)
+    model1 = Model(inputs=inp, outputs=y_r)
+
+    model1.compile(loss='binary_crossentropy',
+                   jit_compile=True, steps_per_execution=100,
+                   optimizer=Adagrad(
+                       learning_rate=0.01), metrics=['accuracy'])
+
+
+    # y = GlobalAveragePooling1D()(y)
+
+    # x = concatenate([x_r, y])
+
+    # output = Dense(1, activation='sigmoid')(x)
+
+    # model = Model(inp, output)
+
+
+    return model1
+
+
+def gru_cnn2(xshape1, xshape2, optimizer='adam', recurrent_units=100, dropout_rate=0.2, recurrent_dropout_rate=0.2, dense_size=100):
 
     #inp = Input(shape=(maxlen, ))
     input_layer = Input(shape=(xshape1, xshape2), )
