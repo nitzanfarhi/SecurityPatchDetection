@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 # coding: utf-8
 from importlib.metadata import metadata
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.callbacks import ModelCheckpoint
-from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow import keras
+from keras.callbacks import EarlyStopping
+from keras.callbacks import ModelCheckpoint
+from keras.optimizers import SGD, Adam
 
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
-from helper import find_best_f1, EnumAction, safe_mkdir
+from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
 from classes import Repository
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
@@ -173,6 +174,9 @@ def get_event_window(cur_repo_data, event, aggr_options, days=10, hours=10, back
     elif aggr_options == Aggregate.before_cve:
         res = cur_repo_data[event[1] - backs:event[1] + backs]
 
+    elif aggr_options == Aggregate.only_before:
+        res = cur_repo_data[event[1] - backs -1 :event[1]-1]
+
     elif aggr_options == Aggregate.none:
         res = cur_repo_data.reset_index().drop(["created_at"], axis=1).set_index("idx")[
             event[1] - backs:event[1] + befs]
@@ -190,7 +194,7 @@ class Aggregate(Enum):
     none = "none"
     before_cve = "before"
     after_cve = "after"
-
+    only_before = "only_before"
 
     # created at
     # fundingLinks
@@ -372,14 +376,13 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours, resam
     """
     comment = "_"+comment if comment else ""
     metadata = "_meta" if metadata else ""
-    if aggr_options == Aggregate.before_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata+comment
+    if aggr_options in [Aggregate.before_cve, Aggregate.only_before, Aggregate.none]:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}{comment}"
     elif aggr_options == Aggregate.after_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}"+metadata+comment
-    elif aggr_options == Aggregate.none:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}"+metadata+comment
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}{comment}"
     else:
-        raise Exception("Aggr options not supported")
+        raise ValueError("Aggr options not supported")
+        
     logger.debug(name_template)
     return name_template
 
@@ -402,12 +405,16 @@ def extract_dataset(aggr_options=Aggregate.none, benign_vuln_ratio=1, hours=0, d
     if cache and os.path.isdir("ready_data/" + dirname) and len(os.listdir("ready_data/" + dirname)) != 0:
         logger.info(f"Loading Dataset {dirname}")
         all_repos = []
-        for file in os.listdir("ready_data/" + dirname):
-            with open("ready_data/" + dirname + "/" + file, 'rb') as f:
-                repo = pickle.load(f)
-                all_repos.append(repo)
-        column_names = pickle.load(open("ready_data/" + dirname + "/column_names.pkl", 'rb'))
-
+        try:
+            for file in os.listdir("ready_data/" + dirname):
+                with open("ready_data/" + dirname + "/" + file, 'rb') as f:
+                    repo = pickle.load(f)
+                    all_repos.append(repo)
+            column_names = pickle.load(open("ready_data/" + dirname + "/column_names.pkl", 'rb'))
+        except AttributeError:
+            logger.info(f"Malformed dataset - Creating Dataset {dirname}")
+            all_repos, column_names = create_dataset(
+                aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)            
     else:
         logger.info(f"Creating Dataset {dirname}")
         all_repos, column_names = create_dataset(
@@ -546,26 +553,27 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     if len(scores) == 1:
         return 0
-    max_f1, thresh, _ = find_best_f1(X_test, used_y_test, model)
-    logger.critical(f"{max_f1}, {thresh},{str(scores[1])}")
+    max_f1, f1_thresh, _ = find_best_f1(X_test, used_y_test, model)
+    max_acc, acc_thresh, _ = find_best_accuracy(X_test, used_y_test, model)
+    logger.critical(f"F1 - {max_f1}, {f1_thresh}")
+    logger.critical(f"Acc - {max_acc}, {acc_thresh}")
     if save:
         with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
-            mfile.write('Accuracy: %.2f%%\n' % (scores[1] * 100))
+            mfile.write('Accuracy: %.2f%%\n' % (max_acc * 100))
             mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
             mfile.write('confusion matrix:\n')
-            tn, fp, fn, tp = confusion_matrix(y_test, pred > thresh).ravel()
+            tn, fp, fn, tp = confusion_matrix(y_test, pred > acc_thresh).ravel()
             conf_matrix = f"tn={tn}, fp={fp}, fn={fn}, tp={tp}"
             mfile.write(conf_matrix)
 
-            logger.critical('Accuracy: %.2f%%' % (scores[1] * 100))
+            logger.critical('Accuracy: %.2f%%' % (max_acc * 100))
             logger.critical('fscore: %.2f%%' % (max_f1 * 100))
             logger.critical(str(conf_matrix))
 
-        fpr = dict()
-        tpr = dict()
-        roc_auc = dict()
+        fpr = {}
+        tpr = {}
         fpr["micro"], tpr["micro"], _ = roc_curve(used_y_test, pred)
-        roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+        roc_auc = {"micro": auc(fpr["micro"], tpr["micro"])}
         plt.figure()
         lw = 2
 
@@ -576,7 +584,7 @@ def check_results(X_test, y_test, pred, model, exp_name, model_name, save=False)
         plt.ylim([0.0, 1.05])
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
-        plt.title("Receiver operating characteristic example")
+        plt.title("Receiver operating characteristic")
         plt.legend(loc="lower right")
         plt.savefig(f"figs/auc_{exp_name}_{roc_auc['micro']}.png")
 
@@ -651,28 +659,34 @@ def split_repos_into_train_and_validation(X_train,y_train):
     raise NotImplementedError()
 
 def hypertune(X_train,y_train,X_test,y_test):
-    tuner = Hyperband(hypertune_conv1d(X_train.shape[1], X_train.shape[2]),
+    tuner = Hyperband(hypertune_gru_cnn(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
                          # max_trials=10,
                          executions_per_trial=10,
-                         directory='2',
-                         project_name='hyperband3')
+                         directory='hypertune',
+                         project_name='hyper_gru_2')
                          
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
-
-    tuner.search(X_train,
-        y_train,
-        batch_size=64,
-        epochs=50,
-        validation_data=(X_test, y_test),
-        verbose=1,
-        callbacks=[es])
+    while True:
+        try:
+            tuner.search(X_train,
+                y_train,
+                batch_size=64,
+                epochs=500,
+                validation_data=(X_test, y_test),
+                verbose=1,
+                callbacks=[es])
+            break
+        except Exception as e:
+            print(e)
+            continue
+        
     tuner.results_summary()
     print(tuner.get_best_hyperparameters(1))
     return tuner.get_best_models(1)[0]
 
 def init():
-    SEED = 0x1337
+    SEED = 0x0
     random.seed(SEED)
     np.random.seed(SEED)
     tf.random.set_seed(SEED)
@@ -843,7 +857,7 @@ def main():
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
     pred = best_model.predict(X_test, verbose = 0).reshape(-1)
     acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
-    logging.critical(f"Best val accuracy: {acc}")
+    logging.critical(f"Best test accuracy: {acc}")
 
     if args.fp:
             extract_fp(X_test,y_test,pred,test_details,exp_name)
