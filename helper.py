@@ -175,7 +175,7 @@ def find_best_accuracy(X_test, y_test, model):
     best_y = 0
     pred = model.predict(X_test)
     for i in range(100):
-        y_predict = (pred.reshape(-1) > i / 1000).astype(int)
+        y_predict = (pred.reshape(-1) > i / 100).astype(int)
         score = a_score(y_test.astype(float), y_predict)
         # print(i,cur_f1)
         if score > max_score:
