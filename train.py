@@ -9,14 +9,8 @@ from keras.optimizers import SGD, Adam
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
-<<<<<<< HEAD
 from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
 from classes import Repository
-=======
-from sklearn.model_selection import train_test_split
-from helper import find_best_acc, find_best_f1, EnumAction, safe_mkdir
-from helper import Repository, bool_metadata
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
@@ -212,10 +206,7 @@ class Aggregate(Enum):
     none = "none"
     before_cve = "before"
     after_cve = "after"
-<<<<<<< HEAD
     only_before = "only_before"
-=======
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
 
     # created at
     # fundingLinks
@@ -426,19 +417,10 @@ def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours,
     """
     comment = "_" + comment if comment else ""
     metadata = "_meta" if metadata else ""
-<<<<<<< HEAD
     if aggr_options in [Aggregate.before_cve, Aggregate.only_before, Aggregate.none]:
         name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}{comment}"
     elif aggr_options == Aggregate.after_cve:
         name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}{comment}"
-=======
-    if aggr_options == Aggregate.before_cve or aggr_options != Aggregate.after_cve and aggr_options == Aggregate.none:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}" + comment
-
-    elif aggr_options == Aggregate.after_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}" + comment
-
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
     else:
         raise ValueError("Aggr options not supported")
         
@@ -474,7 +456,6 @@ def extract_dataset(aggr_options=Aggregate.none,
 
         logger.info(f"Loading Dataset {dirname}")
         all_repos = []
-<<<<<<< HEAD
         try:
             for file in os.listdir("ready_data/" + dirname):
                 with open("ready_data/" + dirname + "/" + file, 'rb') as f:
@@ -485,15 +466,6 @@ def extract_dataset(aggr_options=Aggregate.none,
             logger.info(f"Malformed dataset - Creating Dataset {dirname}")
             all_repos, column_names = create_dataset(
                 aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)            
-=======
-        for file in os.listdir("ready_data/" + dirname):
-            with open("ready_data/" + dirname + "/" + file, 'rb') as f:
-                repo = pickle.load(f)
-                all_repos.append(repo)
-        column_names = pickle.load(
-            open("ready_data/" + dirname + "/column_names.pkl", 'rb'))
-
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
     else:
         logger.info(f"Creating Dataset {dirname}")
         all_repos, column_names = create_dataset(aggr_options,
@@ -645,7 +617,6 @@ def check_results(X_test,
     Check the results of the model.
     """
     used_y_test = np.asarray(y_test).astype('float32')
-<<<<<<< HEAD
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     if len(scores) == 1:
         return 0
@@ -653,23 +624,12 @@ def check_results(X_test,
     max_acc, acc_thresh, _ = find_best_accuracy(X_test, used_y_test, model)
     logger.critical(f"F1 - {max_f1}, {f1_thresh}")
     logger.critical(f"Acc - {max_acc}, {acc_thresh}")
-=======
-    max_acc, acc_thresh = find_best_acc(X_test, used_y_test, model, verbose=0)
-    max_f1, f1_thresh = find_best_f1(X_test, used_y_test, model)
-    logger.critical(f"Accuracy: {max_acc}, F1-Score: {max_f1}")
-
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
     if save:
         with open(f"results/{exp_name}_{model_name}.txt", 'w') as mfile:
             mfile.write('Accuracy: %.2f%%\n' % (max_acc * 100))
             mfile.write('fscore: %.2f%%\n' % (max_f1 * 100))
             mfile.write('confusion matrix:\n')
-<<<<<<< HEAD
             tn, fp, fn, tp = confusion_matrix(y_test, pred > acc_thresh).ravel()
-=======
-            tn, fp, fn, tp = confusion_matrix(y_test,
-                                              pred > acc_thresh / 100).ravel()
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
             conf_matrix = f"tn={tn}, fp={fp}, fn={fn}, tp={tp}"
             mfile.write(conf_matrix)
 
@@ -814,7 +774,6 @@ def split_into_x_and_y(repos,
 def split_repos_into_train_and_validation(X_train, y_train):
     raise NotImplementedError()
 
-<<<<<<< HEAD
 def hypertune(X_train,y_train,X_test,y_test):
     tuner = Hyperband(hypertune_gru_cnn(X_train.shape[1], X_train.shape[2]),
                          objective='val_accuracy',
@@ -838,27 +797,6 @@ def hypertune(X_train,y_train,X_test,y_test):
             print(e)
             continue
         
-=======
-
-def hypertune(X_train, y_train, X_test, y_test, exp_name, verbose=0):
-    tuner = Hyperband(
-        hypertune_bilstm(X_train.shape[1], X_train.shape[2]),
-        objective='val_accuracy',
-        # max_trials=10,
-        executions_per_trial=10,
-        directory='hypertune2',
-        project_name=exp_name)
-
-    es = EarlyStopping(monitor='val_accuracy', mode='max', patience=60)
-
-    tuner.search(X_train,
-                 y_train,
-                 batch_size=128,
-                 epochs=100,
-                 validation_data=(X_test, y_test),
-                 verbose=0,
-                 callbacks=[es])
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
     tuner.results_summary()
     print(tuner.get_best_hyperparameters(1))
     return tuner.get_best_models(1)[0]
@@ -1222,20 +1160,9 @@ def main():
                                exp_name + f"_{args.model}")
 
     # handle test set
-<<<<<<< HEAD
     X_test,y_test,test_details = split_into_x_and_y(test_repos, with_details=True,remove_unimportant_features=remove_unimportant)
     pred = best_model.predict(X_test, verbose = 0).reshape(-1)
     acc = check_results(X_test, y_test, pred, best_model, exp_name, args.model,save=True)
-=======
-    pred = best_model.predict(X_test, verbose=0).reshape(-1)
-    acc = check_results(X_test,
-                        y_test,
-                        pred,
-                        best_model,
-                        exp_name,
-                        args.model,
-                        save=True)
->>>>>>> ba67b6fa5ec09eb58d784a6c88014b6a75315052
     logging.critical(f"Best test accuracy: {acc}")
 
     if args.fp:
