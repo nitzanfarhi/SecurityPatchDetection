@@ -23,3 +23,6 @@ tuner3/*
 tuner4/*
 2/*
 hypertune/*
+hypertune2/*
+*.txt
+.vscode/*
