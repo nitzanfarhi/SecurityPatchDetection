@@ -47,6 +47,9 @@ coloredlogs.install(fmt='%(asctime)s %(levelname)s %(message)s')
 BENIGN_TAG = 0
 VULN_TAG = 1
 
+DATASET_DIRNAME = "ready_data/"
+BENIGN_EVENTS_RETRY = 5
+
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
     """
@@ -56,7 +59,7 @@ def find_benign_events(cur_repo_data, gap_days, num_of_events):
     :return: list of all events
     """
     benign_events = []
-    retries = num_of_events * 5
+    retries = num_of_events * BENIGN_EVENTS_RETRY
     counter = 0
     for _ in range(num_of_events):
         found_event = False
@@ -208,11 +211,6 @@ class Aggregate(Enum):
     after_cve = "after"
     only_before = "only_before"
 
-    # created at
-    # fundingLinks
-    # languages_edges
-
-
 def create_dataset(aggr_options,
                    benign_vuln_ratio,
                    hours,
@@ -236,8 +234,8 @@ def create_dataset(aggr_options,
     ignored = []
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days,
                                 hours, resample, metadata, comment)
-    safe_mkdir("ready_data")
-    safe_mkdir("ready_data/" + dirname)
+    safe_mkdir(DATASET_DIRNAME)
+    safe_mkdir(DATASET_DIRNAME + dirname)
 
     counter = 0
     for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
@@ -324,13 +322,13 @@ def create_dataset(aggr_options,
         repo_holder.pad_repo()
 
         tqdm_update("save")
-        with open("ready_data/" + dirname + "/" + repo_holder.file + ".pkl",
+        with open(DATASET_DIRNAME + dirname + "/" + repo_holder.file + ".pkl",
                   'wb') as f:
             pickle.dump(repo_holder, f)
 
         all_repos.append(repo_holder)
 
-    with open("ready_data/" + dirname + "/column_names.pkl", 'wb') as f:
+    with open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'wb') as f:
         pickle.dump(cur_repo.columns, f)
     return all_repos, cur_repo.columns
 
@@ -450,18 +448,18 @@ def extract_dataset(aggr_options=Aggregate.none,
 
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days,
                                 hours, resample, metadata, comment)
-    if (cache and os.path.isdir("ready_data/" + dirname)
-            and len(os.listdir("ready_data/" + dirname)) != 0
-            and os.path.isfile("ready_data/" + dirname + "/column_names.pkl")):
+    if (cache and os.path.isdir(DATASET_DIRNAME + dirname)
+            and len(os.listdir(DATASET_DIRNAME + dirname)) != 0
+            and os.path.isfile(DATASET_DIRNAME + dirname + "/column_names.pkl")):
 
         logger.info(f"Loading Dataset {dirname}")
         all_repos = []
         try:
-            for file in os.listdir("ready_data/" + dirname):
-                with open("ready_data/" + dirname + "/" + file, 'rb') as f:
+            for file in os.listdir(DATASET_DIRNAME + dirname):
+                with open(DATASET_DIRNAME + dirname + "/" + file, 'rb') as f:
                     repo = pickle.load(f)
                     all_repos.append(repo)
-            column_names = pickle.load(open("ready_data/" + dirname + "/column_names.pkl", 'rb'))
+            column_names = pickle.load(open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'rb'))
         except AttributeError:
             logger.info(f"Malformed dataset - Creating Dataset {dirname}")
             all_repos, column_names = create_dataset(
