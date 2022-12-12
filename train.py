@@ -434,7 +434,8 @@ def extract_dataset(aggr_options=Aggregate.none,
                     backs=50,
                     cache=False,
                     metadata=False,
-                    comment=""):
+                    comment="",
+                    data_location=r"data_collection\data\json_commits"):
     """
     :param aggr_options: Aggregate.none, Aggregate.before_cve, Aggregate.after_cve
     :param benign_vuln_ratio: ratio of benign to vuln events
@@ -448,9 +449,10 @@ def extract_dataset(aggr_options=Aggregate.none,
 
     dirname = make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days,
                                 hours, resample, metadata, comment)
-    if (cache and os.path.isdir(DATASET_DIRNAME + dirname)
-            and len(os.listdir(DATASET_DIRNAME + dirname)) != 0
-            and os.path.isfile(DATASET_DIRNAME + dirname + "/column_names.pkl")):
+    path_name = os.path.join(DATASET_DIRNAME,dirname)
+    if (cache and os.path.isdir(path_name)
+            and len(os.listdir(path_name)) != 0
+            and os.path.isfile(os.path.join(path_name,"column_names.pkl"))):
 
         logger.info(f"Loading Dataset {dirname}")
         all_repos = []
@@ -728,6 +730,7 @@ def parse_args():
     parser.add_argument('--submodels',
                         action="store_true",
                         help="Use metadata")
+    parser.add_argument('--data-location', action="store", help="Data location")
     parser.add_argument(
         '--merge-all',
         action="store_true",
@@ -1018,7 +1021,8 @@ def main():
         backs=args.backs,
         cache=args.cache,
         metadata=args.metadata,
-        comment=args.comment)
+        comment=args.comment,
+        data_location=args.data_location)
 
     all_repos, num_of_vulns = pad_and_fix(all_repos)
 

@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -10,29 +11,27 @@ import wget
 import graphql
 
 from pathlib import Path
-from tqdm import tqdm
 from urllib.parse import urlparse
 from git2json import *
 from datetime import datetime
 
-logging.basicConfig(filename='last_run.log',
-                    filemode='w',
-                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                    datefmt='%H:%M:%S',
-                    level=logging.DEBUG)
+logging.basicConfig(
+    filename='last_run.log',
+    filemode='w',
+    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+    datefmt='%H:%M:%S',
+    level=logging.DEBUG)
 
 logger = logging.getLogger('analyze_cve')
 logger.setLevel(logging.DEBUG)
 
 logger.addHandler(logging.StreamHandler())
 
-
 GITHUB_ARCHIVE_DIRNAME = "gharchive"
 gh_cve_dir = "gh_cve_proccessed"
 commit_directory = "commits"
+json_commit_directory = "json_commits"
 timezone_directory = "timezones"
-
-
 
 LOG_GRAPHQL = "graphql_errlist.txt"
 LOG_AGGR_ALL = 'gharchive_errlist.txt'
@@ -63,15 +62,13 @@ ref_keys = [
 ]
 EXTENSION_NUM = 300
 github_list = ['MLIST', 'CONFIRM', 'MISC', 'URL', 'CONFIRM', 'XF', 'MISC']
-
+DATE_COLUMNS = ["vulnerabilityAlerts","forks","issues","pullRequests","releases","stargazers"]
 github_counter = 0
 
 
 def safe_mkdir(dirname):
-    try:
+    with contextlib.suppress(FileExistsError):
         os.mkdir(dirname)
-    except FileExistsError:
-        pass
 
 
 def ref_parser(ref_row):
@@ -82,10 +79,10 @@ def ref_parser(ref_row):
     """
     global github_counter
     refs = ref_row.split('|')
-    ret_dict = dict()
+    ret_dict = {}
     has_github_ref = 0
     for ref in refs:
-        try:
+        with contextlib.suppress(ValueError):
             key, val = ref.split(":", 1)
             key = key.replace(' ', '')
             if "github" in val.lower():
@@ -94,9 +91,6 @@ def ref_parser(ref_row):
                 ret_dict[key].append(val)
             else:
                 ret_dict[key] = [val]
-        except ValueError:
-            pass
-
     for ref_key in ref_keys:
         if ref_key not in ret_dict:
             ret_dict[ref_key] = []
@@ -112,7 +106,7 @@ def handle_duplicate_key(key, ret_dict, val):
             found = True
             break
     if not found:
-        raise BaseException(f'{key} already in dict')
+        raise RuntimeError(f'{key} already in dict')
 
 
 # token = open(r'C:\secrets\github_token.txt', 'r').read()
@@ -127,15 +121,14 @@ def gather_pages(obj):
         counter = 0
         while retry and counter < 100:
             try:
+                retry = False
                 for obj_instance in obj.get_page(i // 30):
                     obj_instance._completeIfNeeded = lambda: None
                     obj_list.append(obj_instance.raw_data)
-                    retry = False
             except Exception as e:
                 print(obj)
                 traceback.print_exc()
                 counter += 1
-                pass
     return obj_list
 
 
@@ -150,7 +143,7 @@ attributes = ['stargazers_with_dates']
 attributes = ['events']
 
 
-def save_all_data(repo_name):
+def save_all_data(g, repo_name):
     repo = g.get_repo(repo_name)
     for attribute in attributes:
         print(f"\t{attribute}")
@@ -160,11 +153,10 @@ def save_all_data(repo_name):
             json.dump(gather_pages(attr_func()), fout, indent=4)
 
 
-def yearly_preprocess():
-    import tqdm
+def yearly_preprocess(output_dir, repo_list):
     repo_dfs = []
     err_list = open("gh_yearly_errlist.txt", 'w')
-    for repo_name, df in tqdm.tqdm(repo_list):
+    for repo_name, df in repo_list:
         if df[(df.type == 'VulnEvent')].empty:
             err_list.write(f"{repo_name}\n")
             continue
@@ -179,7 +171,7 @@ def yearly_preprocess():
             cur_df = cur_df.resample("D").sum()
             day_df = day_df.join(cur_df, how='outer')
             day_df = day_df.fillna(0)
-        day_df.to_csv(f"{OUTPUT_DIR}/{repo_name.replace('/', '_')}.csv")
+        day_df.to_csv(f"{output_dir}/{repo_name.replace('/', '_')}.csv")
 
 
 def parse_url(var):
@@ -190,16 +182,16 @@ def parse_url(var):
         return (None, None, None, None)
     if '/pull/' in path:
         if path.count('/') == 6:
-            _, group, proj, pull, pull_num, commit, _ = path.split(
-                '/', maxsplit=6)
+            _, group, proj, pull, pull_num, commit, _ = path.split('/',
+                                                                   maxsplit=6)
         else:
             _, group, proj, pull, pull_num, commit, commit_hash, _ = path.split(
                 '/', maxsplit=7)
     else:
-        _, group, proj, commit, commit_hash, _ = path.split(
-            '/', maxsplit=5)
+        _, group, proj, commit, commit_hash, _ = path.split('/', maxsplit=5)
 
     return group, proj, commit.replace(' ', ''), commit_hash
+
 
 def extract_commits_from_projects_gh(cves):
     repo_commits = {}
@@ -243,16 +235,24 @@ def preprocess_dataframe(cves):
         cves[name] = ref_val
     return cves
 
+
 datasets_foldername = "datasets"
+
+
 def cve_preprocess(output_dir, cache_csv=False):
     logger.debug("Downloading CVE dataset")
-    safe_mkdir(os.path.join(output_dir,datasets_foldername))
+    safe_mkdir(os.path.join(output_dir, datasets_foldername))
     if not cache_csv:
         cve_xml = "https://cve.mitre.org/data/downloads/allitems.csv"
-        wget.download(cve_xml, out=os.path.join(output_dir,datasets_foldername))
+        wget.download(cve_xml,
+                      out=os.path.join(output_dir, datasets_foldername))
 
-    cves = pd.read_csv(os.path.join(output_dir,datasets_foldername,"allitems.csv"), skiprows=11, encoding="ISO-8859-1",
-                           names=['cve', 'entry', 'desc', 'ref', 'assigned', 'un1', 'un2'], dtype=str)
+    cves = pd.read_csv(
+        os.path.join(output_dir, datasets_foldername, "allitems.csv"),
+        skiprows=11,
+        encoding="ISO-8859-1",
+        names=['cve', 'entry', 'desc', 'ref', 'assigned', 'un1', 'un2'],
+        dtype=str)
     cves = preprocess_dataframe(cves)
 
     repo_commits = extract_commits_from_projects_gh(cves)
@@ -261,13 +261,13 @@ def cve_preprocess(output_dir, cache_csv=False):
 
 
 def graphql_preprocess(output_dir, project_name=None):
-    with open(os.path.join(output_dir,'repo_commits.json'), 'r') as fin:
+    with open(os.path.join(output_dir, 'repo_commits.json'), 'r') as fin:
         repo_commits = json.load(fin)
 
     repos = repo_commits.keys()
     for idx, repo in enumerate(repos):
         logger.debug(f"Processing {repo} ({idx}/{len(repos)})")
-        
+
         if project_name is not None and not repo.endswith("/" + project_name):
             logger.error(f"Skipping {repo} since it has less that 10 CVEs")
             continue
@@ -275,45 +275,40 @@ def graphql_preprocess(output_dir, project_name=None):
         try:
             graphql.get_repo(output_dir, repo)
         except Exception as e:
-            logger.error(f"Repository {repo} error at:" + repo + traceback.format_exc())
-
-
+            logger.error(f"Repository {repo} error at:" + repo +
+                         traceback.format_exc())
 
 
 def find_name(repo_commits, repo_name: str) -> str:
-    for key in repo_commits.keys():
-        if key.endswith("/" + repo_name):
-            return key
-    return ""
+    return next(
+        (key for key in repo_commits.keys() if key.endswith(f"/{repo_name}")),
+        "")
 
 
 def most_common(lst):
-    if not lst:
-        return 0
-    return max(set(lst), key=lst.count)
+    return max(set(lst), key=lst.count) if lst else 0
 
 
 def aggregate_all(output_dir):
     new_dfs = []
-    tqdm.pandas()
 
-    with open(os.path.join(output_dir,'repo_commits.json'), 'r') as fin:
+    with open(os.path.join(output_dir, 'repo_commits.json'), 'r') as fin:
         repo_commits = json.load(fin)
 
     # Getting graphql data
 
     print("[LOG] Getting graphql data:")
-    for filename in os.listdir(os.path.join(output_dir, graphql.OUTPUT_DIRNAME))[:]:
+    for filename in os.listdir(os.path.join(output_dir,
+                                            graphql.OUTPUT_DIRNAME))[:]:
+        logger.debug(f"Getting graphql of {filename}")
         print(filename)
-        df = pd.read_csv(os.path.join(output_dir,graphql.OUTPUT_DIRNAME,f"{filename}"))
+        df = pd.read_csv(
+            os.path.join(output_dir, graphql.OUTPUT_DIRNAME, f"{filename}"))
         name = filename.split(".csv")[0]
         if df.empty:
             continue
 
-        for col in [
-                'vulnerabilityAlerts', 'forks', 'issues', 'pullRequests',
-                'releases', 'stargazers'
-        ]:
+        for col in DATE_COLUMNS:
             if not df[col].isnull().all():
                 cur_df = pd.DataFrame()
                 cur_df['created_at'] = pd.to_datetime(df[col].dropna())
@@ -322,25 +317,28 @@ def aggregate_all(output_dir):
                 new_dfs.append(cur_df)
 
     # Getting gharchive data
-    print("[LOG] Getting gharchive data:")
+    logger.debug("Getting gharchive data:")
     dfs = []
     for year in range(2015, 2020):
-        print(year)
-        dfs.append(pd.read_csv(os.path.join(output_dir, GITHUB_ARCHIVE_DIRNAME, f'{year}.csv'))
-
+        logger.debug(f"gharchive of year {year}")
+        dfs.append(
+            pd.read_csv(
+                os.path.join(output_dir, GITHUB_ARCHIVE_DIRNAME,
+                             f'{year}.csv')))
     # adding vulnerabilities events
 
-    print("[LOG] Adding vulnerabilities events:")
+    logger.debug("Adding vulnerabilities events:")
     # Getting commit data
 
     repo_commit_df_lst = []
-    for repo, dates in list(repo_commits.items())[:]:
-        logging.debug(f"Aggregating repo {repo}")
+    for repo, vuln_commits in list(repo_commits.items())[:]:
+        logger.debug(f"Aggregating repo {repo}")
         repo_real_name = repo.replace('/', '_')
-        with open(os.path.join(output_dir,commit_directory,f"{repo_real_name}.json", 'r') as fin:
+        with open(
+                os.path.join(output_dir, json_commit_directory,
+                             f"{repo_real_name}.json"), 'r') as fin:
             all_commits = json.load(fin)
 
-        vuln_commits = [date[0] for date in dates]
         for commit in all_commits:
             if commit[0] in vuln_commits:
                 commit.append(1)
@@ -354,37 +352,46 @@ def aggregate_all(output_dir):
                                           'Hash', 'created_at', "Add", "Del",
                                           "Files", "Vuln", "name", "type"
                                       ])
+
         repo_commit_df_lst.append(
             repo_commit_df)  # df['Time'] = pd.to_datetime(df['Time'])
 
-    df = pd.concat(dfs + repo_commit_df_lst +
-                   new_dfs).progress_apply(lambda x: x)
+    logger.debug("Concatenating dataframes")
+    df = pd.concat(dfs + repo_commit_df_lst + new_dfs)
+
+    logger.debug("Replacing / with _")
     df.name = df.name.str.replace("/", "_")
+
+    logger.debug("Grouping Dataframes")
     repo_list = list(df.groupby('name'))
 
-    logging.debug("[LOG] saving data to csvs")
-    safe_mkdir(os.path.join(output_dir,gh_cve_dir))
+    logger.debug("saving data to parquets")
+    safe_mkdir(os.path.join(output_dir, gh_cve_dir))
     for repo_name, df in repo_list:
-        df.to_csv(os.path.join(output_dir,gh_cve_dir, f"{repo_name.replace('/', '_')}.csv"))
+        logger.debug(f"Saving {repo_name} to parquet")
+        df.to_csv(
+            os.path.join(output_dir, gh_cve_dir,
+                         f"{repo_name.replace('/', '_')}.csv"))
 
 
 def extract_commits_from_projects(output_dir):
 
     safe_mkdir(os.path.join(output_dir, commit_directory))
+    safe_mkdir(os.path.join(output_dir, json_commit_directory))
 
-    with open(os.path.join(output_dir,'repo_commits.json'), 'r') as fin:
+    with open(os.path.join(output_dir, 'repo_commits.json'), 'r') as fin:
         repo_commits = json.load(fin)
 
     for repo_name in repo_commits.keys():
-        logging.debug(f"Processing {repo_name}")
+        logger.debug(f"Processing {repo_name}")
         author, repo = repo_name.split("/")
         repo_directory = f"{author}_{repo}"
-        commit_cur_dir = os.path.join(output_dir, commit_directory, repo_directory)
+        commit_cur_dir = os.path.join(output_dir, commit_directory,
+                                      repo_directory)
         repo_url = f"https://github.com/{repo_name}.git"
 
-        subprocess.run(
-            f"git clone --mirror {repo_url} {commit_cur_dir}",
-            shell=True)
+        subprocess.run(f"git clone --mirror {repo_url} {commit_cur_dir}",
+                       shell=True)
 
         subprocess.run(f"git -C {commit_cur_dir} fetch --unshallow",
                        shell=True)
@@ -416,10 +423,14 @@ def extract_commits_from_projects(output_dir):
                 (commit['commit'], time, adds, dels, len(commit['changes'])))
 
         avg_timezone = most_common(timezones)
-        with open(os.path.join(output_dir,commit_directory,f'{author}_{repo}.json'), 'w') as fout:
+        with open(
+                os.path.join(output_dir, json_commit_directory,
+                             f'{author}_{repo}.json'), 'w') as fout:
             json.dump(res, fout, indent=4)
         safe_mkdir(os.path.join(output_dir, timezone_directory))
-        with open(os.path.join(output_dir,timezone_directory,f'{author}_{repo}.json'), 'w') as fout:
+        with open(
+                os.path.join(output_dir, timezone_directory,
+                             f'{author}_{repo}.json'), 'w') as fout:
             fout.write(str(avg_timezone))
 
 
@@ -427,7 +438,7 @@ def metadata_preprocess(output_dir):
     all_langs = set()
     repos = {}
 
-    with open(os.path.join(output_dir,'repo_commits.json'), 'r') as fin:
+    with open(os.path.join(output_dir, 'repo_commits.json'), 'r') as fin:
         repo_commits = json.load(fin)
 
     for repo_name in repo_commits.keys():
@@ -441,7 +452,7 @@ def metadata_preprocess(output_dir):
 
         # res['languages_edges']='|'.join(list(map(lambda lang: lang['node']['name'],res['languages_edges'])))
 
-    with open(os.path.join(output_dir,'repo_metadata.json'), 'w') as mfile:
+    with open(os.path.join(output_dir, 'repo_metadata.json'), 'w') as mfile:
         json.dump(repos, mfile)
 
 
@@ -486,7 +497,7 @@ if __name__ == '__main__':
     parser.add_argument("--all",
                         action="store_true",
                         help="Run all preprocessing steps")
-    parser.add_argument("-o","--output-dir", action="store", default="data")
+    parser.add_argument("-o", "--output-dir", action="store", default="data")
     args = parser.parse_args()
 
     main(graphql=args.graphql,
