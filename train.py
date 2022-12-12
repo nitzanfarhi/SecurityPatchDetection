@@ -12,7 +12,7 @@ from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
 from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
-from classes import Repository
+from helper import Repository
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
