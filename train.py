@@ -6,6 +6,8 @@ from keras.callbacks import EarlyStopping
 from keras.callbacks import ModelCheckpoint
 from keras.optimizers import SGD, Adam
 
+
+from data_collection.create_dataset import gh_cve_dir, repo_metadata_filename
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
@@ -49,6 +51,23 @@ VULN_TAG = 1
 
 DATASET_DIRNAME = "ready_data/"
 BENIGN_EVENTS_RETRY = 5
+
+def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours,
+                      resample, metadata, comment):
+    """
+    :return: name of the directory to save the data in
+    """
+    comment = "_" + comment if comment else ""
+    metadata = "_meta" if metadata else ""
+    if aggr_options in [Aggregate.before_cve, Aggregate.only_before, Aggregate.none]:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}{comment}"
+    elif aggr_options == Aggregate.after_cve:
+        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}{comment}"
+    else:
+        raise ValueError("Aggr options not supported")
+        
+    logger.debug(name_template)
+    return name_template
 
 
 def find_benign_events(cur_repo_data, gap_days, num_of_events):
@@ -211,14 +230,16 @@ class Aggregate(Enum):
     after_cve = "after"
     only_before = "only_before"
 
-def create_dataset(aggr_options,
+def create_dataset(data_path,
+                   aggr_options,
                    benign_vuln_ratio,
                    hours,
                    days,
                    resample,
                    backs,
                    metadata=False,
-                   comment=""):
+                   comment="",
+                   ):
     """
 
     :param aggr_options: can be before, after or none, to decide how we agregate
@@ -236,9 +257,10 @@ def create_dataset(aggr_options,
                                 hours, resample, metadata, comment)
     safe_mkdir(DATASET_DIRNAME)
     safe_mkdir(DATASET_DIRNAME + dirname)
-
+    cve_dir = os.path.join(data_path, gh_cve_dir)
+    all_metadata = json.load(open(os.path.join(data_path,repo_metadata_filename), 'r'))
     counter = 0
-    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
+    for file in (pbar := tqdm.tqdm(os.listdir(cve_dir)[:])):
 
         def tqdm_update(cur):
             return pbar.set_description(f"{file} - {cur}")
@@ -251,9 +273,9 @@ def create_dataset(aggr_options,
         repo_holder = Repository()
         repo_holder.file = file
         tqdm_update("read")
-        if not os.path.exists(repo_dirs + "/" + file + ".parquet"):
+        if not os.path.exists(os.path.join(cve_dir,file + ".parquet")):
             try:
-                cur_repo = pd.read_csv(repo_dirs + "/" + file + ".csv",
+                cur_repo = pd.read_csv(os.path.join(cve_dir,file + ".csv"),
                                        low_memory=False,
                                        parse_dates=['created_at'],
                                        dtype={
@@ -268,10 +290,10 @@ def create_dataset(aggr_options,
             except pd.errors.EmptyDataError:
                 continue
 
-            cur_repo.to_parquet(repo_dirs + "/" + file + ".parquet")
+            cur_repo.to_parquet(os.path.join(cve_dir, file + ".parquet"))
 
         else:
-            cur_repo = pd.read_parquet(repo_dirs + "/" + file + ".parquet")
+            cur_repo = pd.read_parquet(os.path.join(cve_dir, file + ".parquet"))
 
         if cur_repo.shape[0] < 100:
             ignored.append(file)
@@ -286,7 +308,7 @@ def create_dataset(aggr_options,
 
         if metadata:
             tqdm_update("add metadata")
-            cur_repo = helper.add_metadata(cur_repo, file, repo_holder)
+            cur_repo = helper.add_metadata(data_path, all_metadata, cur_repo, file, repo_holder)
 
         tqdm_update("fix_repo_shape")
         cur_repo = fix_repo_shape(all_set,
@@ -328,6 +350,7 @@ def create_dataset(aggr_options,
 
         all_repos.append(repo_holder)
 
+    assert all_repos
     with open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'wb') as f:
         pickle.dump(cur_repo.columns, f)
     return all_repos, cur_repo.columns
@@ -408,23 +431,6 @@ def fix_repo_shape(all_set, cur_repo, metadata=False, update=lambda cur: None):
     return cur_repo
 
 
-def make_new_dir_name(aggr_options, backs, benign_vuln_ratio, days, hours,
-                      resample, metadata, comment):
-    """
-    :return: name of the directory to save the data in
-    """
-    comment = "_" + comment if comment else ""
-    metadata = "_meta" if metadata else ""
-    if aggr_options in [Aggregate.before_cve, Aggregate.only_before, Aggregate.none]:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_B{backs}{metadata}{comment}"
-    elif aggr_options == Aggregate.after_cve:
-        name_template = f"{str(aggr_options)}_R{benign_vuln_ratio}_RE{resample}_H{hours}_D{days}{metadata}{comment}"
-    else:
-        raise ValueError("Aggr options not supported")
-        
-    logger.debug(name_template)
-    return name_template
-
 
 def extract_dataset(aggr_options=Aggregate.none,
                     benign_vuln_ratio=1,
@@ -435,7 +441,7 @@ def extract_dataset(aggr_options=Aggregate.none,
                     cache=False,
                     metadata=False,
                     comment="",
-                    data_location=r"data_collection\data\json_commits"):
+                    data_location=r"data_collection\data"):
     """
     :param aggr_options: Aggregate.none, Aggregate.before_cve, Aggregate.after_cve
     :param benign_vuln_ratio: ratio of benign to vuln events
@@ -464,11 +470,12 @@ def extract_dataset(aggr_options=Aggregate.none,
             column_names = pickle.load(open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'rb'))
         except AttributeError:
             logger.info(f"Malformed dataset - Creating Dataset {dirname}")
-            all_repos, column_names = create_dataset(
+            all_repos, column_names = create_dataset(data_location, 
                 aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)            
     else:
         logger.info(f"Creating Dataset {dirname}")
-        all_repos, column_names = create_dataset(aggr_options,
+        all_repos, column_names = create_dataset(data_location,
+                                                 aggr_options,
                                                  benign_vuln_ratio,
                                                  hours,
                                                  days,

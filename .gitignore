@@ -26,3 +26,4 @@ hypertune/*
 hypertune2/*
 *.txt
 .vscode/*
+data_collection/data/*

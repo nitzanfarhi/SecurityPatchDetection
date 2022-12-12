@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 import wget
 from . import graphql
+from .utils import safe_mkdir
 
 from pathlib import Path
 from urllib.parse import urlparse
@@ -32,6 +33,7 @@ gh_cve_dir = "gh_cve_proccessed"
 commit_directory = "commits"
 json_commit_directory = "json_commits"
 timezone_directory = "timezones"
+repo_metadata_filename = "repo_metadata.json"
 
 LOG_GRAPHQL = "graphql_errlist.txt"
 LOG_AGGR_ALL = 'gharchive_errlist.txt'
@@ -66,9 +68,6 @@ DATE_COLUMNS = ["vulnerabilityAlerts","forks","issues","pullRequests","releases"
 github_counter = 0
 
 
-def safe_mkdir(dirname):
-    with contextlib.suppress(FileExistsError):
-        os.mkdir(dirname)
 
 
 def ref_parser(ref_row):
@@ -452,7 +451,7 @@ def metadata_preprocess(output_dir):
 
         # res['languages_edges']='|'.join(list(map(lambda lang: lang['node']['name'],res['languages_edges'])))
 
-    with open(os.path.join(output_dir, 'repo_metadata.json'), 'w') as mfile:
+    with open(os.path.join(output_dir, repo_metadata_filename), 'w') as mfile:
         json.dump(repos, mfile)
 
 

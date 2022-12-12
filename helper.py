@@ -288,11 +288,12 @@ def timing(f):
 
 
 
-# all_metadata = json.load(open("data_collection/repo_metadata.json", 'r'))
+# 
 
 bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
 
-def add_metadata(all_metadata, cur_repo,file, repo_holder: Repository=None):
+def add_metadata(data_path, all_metadata, cur_repo,file, repo_holder: Repository=None):
+
     cur_metadata = all_metadata[file.replace("_","/",1)]
     if repo_holder is not None:
         repo_holder.metadata = cur_metadata
@@ -325,7 +326,7 @@ def add_metadata(all_metadata, cur_repo,file, repo_holder: Repository=None):
                 print(key)
 
 
-    with open("data_collection/timezones/"+file+".txt", 'r') as f:
+    with open(os.path.join(data_path,"timezones/",file+".json"), 'r') as f:
         timezone = int(float(f.read()))
     if repo_holder is not None:
         repo_holder.metadata["timezone"] = timezone
