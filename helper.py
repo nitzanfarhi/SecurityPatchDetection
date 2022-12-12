@@ -13,7 +13,7 @@ import os
 import argparse
 import enum
 import json
-from hiddenCVE.graphql import all_langs
+from data_collection.graphql import all_langs
 from dateutil import parser
 from collections import Counter
 import numpy as np
@@ -288,7 +288,7 @@ def timing(f):
 
 
 
-all_metadata = json.load(open("hiddenCVE/repo_metadata.json", 'r'))
+all_metadata = json.load(open("data_collection/repo_metadata.json", 'r'))
 
 bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
 
@@ -325,7 +325,7 @@ def add_metadata(cur_repo,file, repo_holder: Repository=None):
                 print(key)
 
 
-    with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
+    with open("data_collection/timezones/"+file+".txt", 'r') as f:
         timezone = int(float(f.read()))
     if repo_holder is not None:
         repo_holder.metadata["timezone"] = timezone

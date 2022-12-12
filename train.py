@@ -198,8 +198,8 @@ def get_event_window(cur_repo_data,
     return res.values
 
 
-repo_dirs = 'hiddenCVE/gh_cve_proccessed'
-repo_metadata = 'hiddenCVE/repo_metadata.json'
+repo_dirs = 'data_collection/gh_cve_proccessed'
+repo_metadata = 'data_collection/repo_metadata.json'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
