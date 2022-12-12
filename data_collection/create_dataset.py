@@ -8,7 +8,7 @@ import logging
 
 import pandas as pd
 import wget
-import graphql
+from . import graphql
 
 from pathlib import Path
 from urllib.parse import urlparse

@@ -288,11 +288,11 @@ def timing(f):
 
 
 
-all_metadata = json.load(open("data_collection/repo_metadata.json", 'r'))
+# all_metadata = json.load(open("data_collection/repo_metadata.json", 'r'))
 
 bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
 
-def add_metadata(cur_repo,file, repo_holder: Repository=None):
+def add_metadata(all_metadata, cur_repo,file, repo_holder: Repository=None):
     cur_metadata = all_metadata[file.replace("_","/",1)]
     if repo_holder is not None:
         repo_holder.metadata = cur_metadata

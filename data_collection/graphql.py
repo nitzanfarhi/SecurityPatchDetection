@@ -8,7 +8,7 @@ import collections
 import requests
 import os
 
-from create_dataset import safe_mkdir
+from .create_dataset import safe_mkdir
 
 
 class RepoNotFoundError(BaseException):
