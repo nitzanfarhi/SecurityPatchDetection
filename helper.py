@@ -169,7 +169,7 @@ def find_best_f1(X_test, y_test, model):
             max_f1 = cur_f1
             best_y = y_predict
             thresh = i / 100
-    return max_f1, thresh
+    return max_f1, thresh, best_y
 
 
 def find_best_accuracy(X_test, y_test, model):
@@ -294,8 +294,6 @@ def timing(f):
 
     return wrap
 
-
-#
 
 bool_metadata = [
     'owner_isVerified', 'owner_isHireable', 'owner_isGitHubStar',

@@ -737,7 +737,7 @@ def parse_args():
     parser.add_argument('--submodels',
                         action="store_true",
                         help="Use metadata")
-    parser.add_argument('--data-location', action="store", help="Data location")
+    parser.add_argument('--data-location', action="store", help="Data location", default=r"data_collection\data")
     parser.add_argument(
         '--merge-all',
         action="store_true",
@@ -767,9 +767,9 @@ def split_into_x_and_y(repos,
         X_train = np.concatenate(X_train)
         y_train = np.concatenate(y_train)
 
-    if remove_unimportant_features:
-        important_features = np.load("important_features.npy")
-        X_train = X_train[:, :, important_features]
+    # if remove_unimportant_features:
+    #     important_features = np.load("important_features.npy")
+    #     X_train = X_train[:, :, important_features]
 
     if with_details:
         if details:
