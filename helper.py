@@ -310,13 +310,13 @@ def add_metadata(data_path,
                  file,
                  repo_holder: Repository = None):
 
-    cur_metadata = all_metadata[file.replace("_", "/", 1)]
+    cur_metadata = all_metadata[file.replace("_", "/", 1).lower()]
     if repo_holder is not None:
         repo_holder.metadata = cur_metadata
 
     for key in bool_metadata:
         cur_repo[key] = 0
-
+    # todo bugfix for some reason there are no timezones in the metadata (for some repos)
     handle_nonbool_metadata(cur_repo, cur_metadata)
     handle_timezones(data_path, cur_repo, file, repo_holder)
 
@@ -329,7 +329,8 @@ def handle_nonbool_metadata(cur_repo, cur_metadata):
             for lang in all_langs:
                 cur_repo[lang] = 0
             for lang in value:
-                cur_repo[lang] = 1
+                if lang in all_langs:
+                    cur_repo[lang] = 1
 
         elif key == "createdAt":  # this is probably lower performance
             for i in range(2000, 2023):
@@ -354,7 +355,7 @@ def handle_nonbool_metadata(cur_repo, cur_metadata):
 
 
 def handle_timezones(data_path, cur_repo, file, repo_holder):
-    with open(os.path.join(data_path, "timezones/", file + ".json"), 'r') as f:
+    with open(os.path.join(data_path, "timezones", file + ".json"), 'r') as f:
         timezone = int(float(f.read()))
     if repo_holder is not None:
         repo_holder.metadata["timezone"] = timezone

@@ -495,7 +495,6 @@ def feature_importance(model, X_train, columns):
     import shap
     regressor = model
     random_ind = np.random.choice(X_train.shape[0], 1000, replace=False)
-    print(random_ind)
     data = X_train[random_ind[:500]]
     e = shap.DeepExplainer(
         (regressor.layers[0].input, regressor.layers[-1].output), data)
@@ -1018,7 +1017,6 @@ def main():
     args = parse_args()
     logger.level = args.loglevel or logging.CRITICAL
     init()
-    print(args.fp)
     all_repos, exp_name, columns = extract_dataset(
         aggr_options=args.aggr,
         resample=args.resample,
