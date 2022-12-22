@@ -316,7 +316,7 @@ def add_metadata(data_path,
 
     for key in bool_metadata:
         cur_repo[key] = 0
-    # todo bugfix for some reason there are no timezones in the metadata (for some repos)
+        
     handle_nonbool_metadata(cur_repo, cur_metadata)
     handle_timezones(data_path, cur_repo, file, repo_holder)
 
