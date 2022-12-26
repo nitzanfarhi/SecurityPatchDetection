@@ -26,6 +26,7 @@ class Repository:
         self.benign_lst = []
         self.vuln_details = []
         self.benign_details = []
+        self.column_names = []
         self.file = ""
         self.metadata = None
 
@@ -120,9 +121,12 @@ def draw_timeline(name, vulns, first_date, last_date):
     values[-1] = 2
     values[-2] = 2
 
-    X = pd.to_datetime(dates)
+    string_dates = pd.to_datetime(dates).strftime("%Y-%m-%d %H:%M:%S").tolist() 
+    
     fig, ax = plt.subplots(figsize=(6, 1))
-    ax.scatter(X, [1] * len(X), c=values, marker='s', s=100)
+    
+    ax.scatter(string_dates.tolist(), [1] * len(string_dates), c=values, marker='s', s=100)
+
     fig.autofmt_xdate()
 
     # everything after this is turning off stuff that's plotted by default
@@ -159,8 +163,7 @@ def find_best_f1(X_test, y_test, model):
     for i in range(100):
         y_predict = (pred.reshape(-1) > i / 100).astype(int)
         precision, recall, fscore, support = f_score(y_test,
-                                                     y_predict,
-                                                     zero_division=0)
+                                                     y_predict)
         if len(fscore) == 1:
             return 0, 0, 0
         cur_f1 = fscore[1]
@@ -308,7 +311,7 @@ def add_metadata(data_path,
                  all_metadata,
                  cur_repo,
                  file,
-                 repo_holder: Repository = None):
+                 repo_holder: Repository):
 
     cur_metadata = all_metadata[file.replace("_", "/", 1).lower()]
     if repo_holder is not None:
@@ -316,7 +319,7 @@ def add_metadata(data_path,
 
     for key in bool_metadata:
         cur_repo[key] = 0
-        
+
     handle_nonbool_metadata(cur_repo, cur_metadata)
     handle_timezones(data_path, cur_repo, file, repo_holder)
 
@@ -336,7 +339,7 @@ def handle_nonbool_metadata(cur_repo, cur_metadata):
             for i in range(2000, 2023):
                 cur_repo[f"repo_creation_data_{str(i)}"] = 0
             if f"repo_creation_data_{str(parser.parse(value).year)}" not in cur_repo.columns:
-                raise RuntimeError(f"not exist {str(i)}")
+                raise RuntimeError(f"not exist {value}")
             cur_repo[f"repo_creation_data_{str(parser.parse(value).year)}"] = 1
 
         elif key == "fundingLinks":
