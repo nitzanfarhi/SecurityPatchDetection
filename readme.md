@@ -14,4 +14,15 @@ Notice that this dataset doesn't include the commits' generated data as it is ve
 python train.py  -a before --model conv1d -k 10 --metadata -c
 ```
 
+## Citing our work
+If you've found our work usefull, please cite our paper 
 
+```bibtex
+@article{farhi2023detecting,
+  title={Detecting Security Patches via Behavioral Data in Code Repositories},
+  author={Farhi, Nitzan and Koenigstein, Noam and Shavitt, Yuval},
+  journal={arXiv preprint arXiv:2302.02112},
+  year={2023}
+}
+```
+Which can be viewed at [https://arxiv.org/abs/2302.02112](https://arxiv.org/abs/2302.02112)
