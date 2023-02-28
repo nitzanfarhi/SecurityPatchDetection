@@ -15,7 +15,7 @@ python train.py  -a before --model conv1d -k 10 --metadata -c
 ```
 
 ## Citing our work
-If you've found our work usefull, please cite our paper 
+If you've found our work useful, please cite our paper 
 
 ```bibtex
 @article{farhi2023detecting,
