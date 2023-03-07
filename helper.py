@@ -13,7 +13,7 @@ import os
 import argparse
 import enum
 import json
-from data_collection.graphql import all_langs
+from .data_collection.graphql import all_langs
 from dateutil import parser
 from collections import Counter
 import numpy as np
