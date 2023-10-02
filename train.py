@@ -10,6 +10,11 @@ from keras.callbacks import EarlyStopping
 from keras.callbacks import ModelCheckpoint
 from keras.optimizers import SGD, Adam
 
+
+from data_collection.create_dataset import gh_cve_dir, repo_metadata_filename
+from dataset_utils import Aggregate, extract_dataset
+from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
+from helper import Repository
 from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
@@ -17,7 +22,6 @@ from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
 from helper import Repository
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
-from enum import Enum
 from pandas import DataFrame
 from keras_tuner import RandomSearch, Hyperband
 from dateutil import parser
@@ -48,10 +52,7 @@ matplotlib.use('TkAgg')
 logger = logging.getLogger(__name__)
 coloredlogs.install(fmt='%(asctime)s %(levelname)s %(message)s')
 
-BENIGN_TAG = 0
-VULN_TAG = 1
 
-DATASET_DIRNAME = "ready_data/"
 BENIGN_EVENTS_RETRY = 5
 
 
@@ -108,24 +109,8 @@ def create_all_events(cur_repo_data, gap_days):
     return all_events, labels
 
 
-event_types = [
-    'PullRequestEvent', 'PushEvent', 'ReleaseEvent', 'DeleteEvent', 'issues',
-    'CreateEvent', 'releases', 'IssuesEvent', 'ForkEvent', 'WatchEvent',
-    'PullRequestReviewCommentEvent', 'stargazers', 'pullRequests', 'commits',
-    'CommitCommentEvent', 'MemberEvent', 'GollumEvent', 'IssueCommentEvent',
-    'forks', 'PullRequestReviewEvent', 'PublicEvent'
-]
 
 
-def add_type_one_hot_encoding(df):
-    """
-    :param df: dataframe to add type one hot encoding to
-    :return: dataframe with type one hot encoding
-    """
-    type_one_hot = pd.get_dummies(
-        df.type.astype(pd.CategoricalDtype(categories=event_types)))
-    df = pd.concat([df, type_one_hot], axis=1)
-    return df
 
 
 def add_time_one_hot_encoding(df, with_idx=False):
@@ -153,57 +138,9 @@ def add_time_one_hot_encoding(df, with_idx=False):
     return df
 
 
-def get_event_window(cur_repo_data,
-                     event,
-                     aggr_options,
-                     days=10,
-                     hours=10,
-                     backs=50,
-                     resample=24):
-    """
-    :param cur_repo_data: DataFrame that is processed
-    :param event: list of events to get windows from
-    :param aggr_options: can be before, after or none, to decide how we agregate
-    :param days: if 'before' or 'after' is choosed as aggr_options
-        amount of days gathered as a single window (in addition to hours)
-    :param hours: if 'before' or 'after' is choosed as aggr_options
-        amount of hours gathered as a single window (in addition to days)
-    :param backs: if 'none' is choosed as aggr_options, this is the amount of events back taken
-    :param resample: is the data resampled and at what frequency (hours)
-    :return: a window for lstm
-    """
-    befs = -1
-    if aggr_options == Aggregate.after_cve:
-        cur_repo_data = cur_repo_data.reset_index().drop(
-            ["idx"], axis=1).set_index("created_at")
-        cur_repo_data = cur_repo_data.sort_index()
-        hours_befs = 2
 
-        indicator = event[0] - datetime.timedelta(days=0, hours=hours_befs)
-        starting_time = indicator - datetime.timedelta(days=days, hours=hours)
-        res = cur_repo_data[starting_time:indicator]
-        new_row = pd.DataFrame([[0] * len(res.columns)],
-                               columns=res.columns,
-                               index=[starting_time])
-        res = pd.concat([new_row, res], ignore_index=False)
-        res = res.resample(f'{resample}H').sum()
-        res = add_time_one_hot_encoding(res, with_idx=False)
-
-    elif aggr_options == Aggregate.before_cve:
-        res = cur_repo_data[max(0,event[1] - backs):min(event[1] + backs, cur_repo_data.shape[0])]
-
-    elif aggr_options == Aggregate.only_before:
-        res = cur_repo_data[event[1] - backs -1 :event[1]-1]
-
-    elif aggr_options == Aggregate.none:
-        res = cur_repo_data.reset_index().drop(
-            ["created_at"],
-            axis=1).set_index("idx")[event[1] - backs:event[1] + befs]
-    return res.drop(['Hash'],axis=1).values, cur_repo_data[event[1] :event[1] +1]['Hash']
-
-
-repo_dirs = r'C:\Users\nitzan\local\analyzeCVE\data_collection\data\gh_cve_proccessed'
-repo_metadata = r'C:\Users\nitzan\local\analyzeCVE\data_collection\data\repo_metadata.json'
+repo_dirs = 'data_collection/gh_cve_proccessed'
+repo_metadata = 'data_collection/repo_metadata.json'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
@@ -242,14 +179,15 @@ def create_dataset(aggr_options,
     safe_mkdir(DATASET_DIRNAME + dirname)
 
     counter = 0
-    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[counter:])):
-        counter += 1
+    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
+
         def tqdm_update(cur):
-            return pbar.set_description(f"{counter}-{file} - {cur}")
+            return pbar.set_description(f"{file} - {cur}")
 
         if ".csv" not in file:
             continue
         file = file.split(".csv")[0]
+        counter += 1
 
         repo_holder = Repository()
         repo_holder.file = file
@@ -354,14 +292,14 @@ def extract_window(aggr_options, hours, days, resample, backs, file,
     """
 
     for cur in cur_list:
-        res, hash = get_event_window(cur_repo,
+        res = get_event_window(cur_repo,
                                cur,
                                aggr_options,
                                days=days,
                                hours=hours,
                                backs=backs,
                                resample=resample)
-        details = (file, cur, tag, hash)
+        details = (file, cur, tag)
         window_lst.append(res)
         details_lst.append(details)
 
@@ -407,7 +345,7 @@ def fix_repo_shape(all_set, cur_repo, metadata=False, update=lambda cur: None):
     cur_repo = cur_repo.drop(["type"], axis=1)
     cur_repo = cur_repo.drop(["name"], axis=1)
     cur_repo = cur_repo.drop(["Unnamed: 0"], axis=1)
-    # cur_repo = cur_repo.drop(["Hash"], axis=1)
+    cur_repo = cur_repo.drop(["Hash"], axis=1)
     return cur_repo
 
 
@@ -460,16 +398,13 @@ def extract_dataset(aggr_options=Aggregate.none,
         try:
             for file in os.listdir(DATASET_DIRNAME + dirname):
                 with open(DATASET_DIRNAME + dirname + "/" + file, 'rb') as f:
-                    try:
-                        repo = pickle.load(f)
-                        all_repos.append(repo)
-                    except Exception:
-                        print(f"loading {file} failed")
+                    repo = pickle.load(f)
+                    all_repos.append(repo)
             column_names = pickle.load(open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'rb'))
         except AttributeError:
             logger.info(f"Malformed dataset - Creating Dataset {dirname}")
             all_repos, column_names = create_dataset(
-                aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)
+                aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)            
     else:
         logger.info(f"Creating Dataset {dirname}")
         all_repos, column_names = create_dataset(aggr_options,
@@ -492,7 +427,6 @@ def feature_importance(model, X_train, columns):
     import shap
     regressor = model
     random_ind = np.random.choice(X_train.shape[0], 1000, replace=False)
-    print(random_ind)
     data = X_train[random_ind[:500]]
     e = shap.DeepExplainer(
         (regressor.layers[0].input, regressor.layers[-1].output), data)
@@ -736,6 +670,7 @@ def parse_args():
     parser.add_argument('--submodels',
                         action="store_true",
                         help="Use metadata")
+    parser.add_argument('--data-location', action="store", help="Data location", default=r"data_collection\data")
     parser.add_argument(
         '--merge-all',
         action="store_true",
@@ -767,9 +702,9 @@ def split_into_x_and_y(repos,
         X_train = np.concatenate(X_train)
         y_train = np.concatenate(y_train)
 
-    if remove_unimportant_features:
-        important_features = np.load("important_features.npy")
-        X_train = X_train[:, :, important_features]
+    # if remove_unimportant_features:
+    #     important_features = np.load("important_features.npy")
+    #     X_train = X_train[:, :, important_features]
 
     if with_details:
         return X_train, y_train, details
@@ -1016,7 +951,6 @@ def main():
     args = parse_args()
     logger.level = args.loglevel or logging.CRITICAL
     init()
-    print(args.fp)
     all_repos, exp_name, columns = extract_dataset(
         aggr_options=args.aggr,
         resample=args.resample,
@@ -1026,7 +960,8 @@ def main():
         backs=args.backs,
         cache=args.cache,
         metadata=args.metadata,
-        comment=args.comment)
+        comment=args.comment,
+        data_location=args.data_location)
 
     all_repos, num_of_vulns = pad_and_fix(all_repos)
 
@@ -1180,18 +1115,6 @@ def main():
 
     if args.fp:
         extract_fp(X_test, y_test, pred, test_details, exp_name)
-
-    
-    train_dets = sum(best_train_details,[])
-    valid_dets = sum(best_validation_details,[])
-    test_dets = sum(test_details,[])
-    with open("test_details.pickle",'wb') as mfile:
-        pickle.dump(test_dets,mfile)
-    with open("validation_details.pickle",'wb') as mfile:
-        pickle.dump(valid_dets,mfile)
-    with open("train_details.pickle",'wb') as mfile:
-        pickle.dump(train_dets,mfile)
-
 
 
 def pad_and_fix(all_repos):

@@ -1,5 +1,3 @@
-*.npy
-images/*
 *.pyc
 *.bak
 .ipynb_checkpoints/*
