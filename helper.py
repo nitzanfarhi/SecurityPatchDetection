@@ -13,12 +13,13 @@ import os
 import argparse
 import enum
 import json
-from hiddenCVE.graphql import all_langs
+
 from dateutil import parser
 from collections import Counter
 import numpy as np
 
 
+all_langs = ['1C Enterprise', 'AGS Script', 'AIDL', 'AMPL', 'ANTLR', 'API Blueprint', 'ASL', 'ASP', 'ASP.NET', 'ActionScript', 'Ada', 'Agda', 'Alloy', 'AngelScript', 'ApacheConf', 'Apex', 'AppleScript', 'Arc', 'AspectJ', 'Assembly', 'Asymptote', 'Augeas', 'AutoHotkey', 'AutoIt', 'Awk', 'BASIC', 'Ballerina', 'Batchfile', 'Berry', 'Bicep', 'Bikeshed', 'BitBake', 'Blade', 'BlitzBasic', 'Boogie', 'Brainfuck', 'Brightscript', 'C', 'C#', 'C++', 'CMake', 'COBOL', 'CSS', 'CUE', 'CWeb', 'Cadence', "Cap'n Proto", 'Ceylon', 'Chapel', 'Charity', 'ChucK', 'Clarion', 'Classic ASP', 'Clean', 'Clojure', 'Closure Templates', 'CodeQL', 'CoffeeScript', 'ColdFusion', 'Common Lisp', 'Common Workflow Language', 'Coq', 'Cuda', 'Cython', 'D', 'DIGITAL Command Language', 'DM', 'DTrace', 'Dart', 'Dhall', 'Dockerfile', 'Dylan', 'E', 'ECL', 'EJS', 'Eiffel', 'Elixir', 'Elm', 'Emacs Lisp', 'EmberScript', 'Erlang', 'Euphoria', 'F#', 'F*', 'FLUX', 'Fancy', 'Faust', 'Filebench WML', 'Fluent', 'Forth', 'Fortran', 'FreeBasic', 'FreeMarker', 'GAP', 'GCC Machine Description', 'GDB', 'GDScript', 'GLSL', 'GSC', 'Game Maker Language', 'Genshi', 'Gherkin', 'Gnuplot', 'Go', 'Golo', 'Gosu', 'Groff', 'Groovy', 'HCL', 'HLSL', 'HTML', 'Hack', 'Haml', 'Handlebars', 'Haskell', 'Haxe', 'Hy', 'IDL', 'IGOR Pro', 'Inform 7', 'Inno Setup', 'Ioke', 'Isabelle', 'Jasmin', 'Java', 'JavaScript', 'JetBrains MPS', 'Jinja', 'Jolie', 'Jsonnet', 'Julia', 'Jupyter Notebook', 'KRL', 'Kotlin', 'LLVM', 'LSL', 'Lasso', 'Latte', 'Less', 'Lex', 'Limbo', 'Liquid', 'LiveScript', 'Logos', 'Lua', 'M', 'M4', 'MATLAB', 'MAXScript', 'MLIR', 'MQL4', 'MQL5', 'Macaulay2', 'Makefile', 'Mako', 'Mathematica', 'Max', 'Mercury', 'Meson', 'Metal', 'Modelica', 'Modula-2', 'Modula-3', 'Module Management System', 'Monkey', 'Moocode', 'MoonScript', 'Motoko', 'Mustache', 'NASL', 'NSIS', 'NewLisp', 'Nextflow', 'Nginx', 'Nim', 'Nit', 'Nix', 'Nu', 'OCaml', 'Objective-C', 'Objective-C++', 'Objective-J', 'Open Policy Agent', 'OpenEdge ABL', 'PEG.js', 'PHP', 'PLSQL', 'PLpgSQL', 'POV-Ray SDL', 'Pan', 'Papyrus', 'Pascal', 'Pawn', 'Perl', 'Perl 6', 'Pike', 'Pony', 'PostScript', 'PowerShell', 'Processing', 'Procfile', 'Prolog', 'Promela', 'Pug', 'Puppet', 'PureBasic', 'PureScript', 'Python', 'QML', 'QMake', 'R', 'RAML', 'REXX', 'RPC', 'RPGLE', 'RUNOFF', 'Racket', 'Ragel', 'Ragel in Ruby Host', 'Raku', 'ReScript', 'Reason', 'Rebol', 'Red', 'Redcode', 'RenderScript', 'Rich Text Format', 'Riot', 'RobotFramework', 'Roff', 'RouterOS Script', 'Ruby', 'Rust', 'SAS', 'SCSS', 'SMT', 'SQLPL', 'SRecode Template', 'SWIG', 'Sage', 'SaltStack', 'Sass', 'Scala', 'Scheme', 'Scilab', 'Shell', 'ShellSession', 'Sieve', 'Slice', 'Slim', 'SmPL', 'Smali', 'Smalltalk', 'Smarty', 'Solidity', 'SourcePawn', 'Stan', 'Standard ML', 'Starlark', 'Stata', 'StringTemplate', 'Stylus', 'SuperCollider', 'Svelte', 'Swift', 'SystemVerilog', 'TLA', 'TSQL', 'Tcl', 'TeX', 'Tea', 'Terra', 'Thrift', 'Turing', 'Twig', 'TypeScript', 'UnrealScript', 'VBA', 'VBScript', 'VCL', 'VHDL', 'Vala', 'Velocity Template Language', 'Verilog', 'Vim Snippet', 'Vim script', 'Visual Basic', 'Visual Basic .NET', 'Volt', 'Vue', 'WebAssembly', 'Wren', 'X10', 'XProc', 'XQuery', 'XS', 'XSLT', 'Xtend', 'YARA', 'Yacc', 'Yul', 'Zeek', 'Zig', 'eC', 'jq', 'kvlang', 'mupad', 'nesC', 'q', 'sed', 'xBase']
 
 
 
@@ -53,7 +54,7 @@ class Repository:
         return len(self.vuln_lst)
 
     def get_all_details(self):
-        return np.concatenate([self.vuln_details,self.benign_details])
+        return self.vuln_details+self.benign_details
 
 
 
@@ -288,12 +289,12 @@ def timing(f):
 
 
 
-all_metadata = json.load(open("hiddenCVE/repo_metadata.json", 'r'))
+all_metadata = json.load(open(r"C:\Users\nitzan\local\analyzeCVE\data_collection\data\repo_metadata.json", 'r'))
 
 bool_metadata = ['owner_isVerified','owner_isHireable','owner_isGitHubStar',"owner_isCampusExpert","owner_isDeveloperProgramMember",'owner_isSponsoringViewer','owner_isSiteAdmin','isInOrganization', 'hasIssuesEnabled', 'hasWikiEnabled', 'isMirror', 'isSecurityPolicyEnabled','diskUsage', 'owner_isEmployee']
 
 def add_metadata(cur_repo,file, repo_holder: Repository=None):
-    cur_metadata = all_metadata[file.replace("_","/",1)]
+    cur_metadata = all_metadata[file.lower().replace("_","/",1)]
     if repo_holder is not None:
         repo_holder.metadata = cur_metadata
     for key in bool_metadata:
@@ -325,7 +326,7 @@ def add_metadata(cur_repo,file, repo_holder: Repository=None):
                 print(key)
 
 
-    with open("hiddenCVE/timezones/"+file+".txt", 'r') as f:
+    with open(r"C:\Users\nitzan\local\analyzeCVE\data_collection\\data\\timezones\\"+file+".json", 'r') as f:
         timezone = int(float(f.read()))
     if repo_holder is not None:
         repo_holder.metadata["timezone"] = timezone
@@ -337,5 +338,4 @@ def add_metadata(cur_repo,file, repo_holder: Repository=None):
     return cur_repo
 
 
-all_langs = ['1C Enterprise', 'AGS Script', 'AIDL', 'AMPL', 'ANTLR', 'API Blueprint', 'ASL', 'ASP', 'ASP.NET', 'ActionScript', 'Ada', 'Agda', 'Alloy', 'AngelScript', 'ApacheConf', 'Apex', 'AppleScript', 'Arc', 'AspectJ', 'Assembly', 'Asymptote', 'Augeas', 'AutoHotkey', 'AutoIt', 'Awk', 'BASIC', 'Ballerina', 'Batchfile', 'Berry', 'Bicep', 'Bikeshed', 'BitBake', 'Blade', 'BlitzBasic', 'Boogie', 'Brainfuck', 'Brightscript', 'C', 'C#', 'C++', 'CMake', 'COBOL', 'CSS', 'CUE', 'CWeb', 'Cadence', "Cap'n Proto", 'Ceylon', 'Chapel', 'Charity', 'ChucK', 'Clarion', 'Classic ASP', 'Clean', 'Clojure', 'Closure Templates', 'CodeQL', 'CoffeeScript', 'ColdFusion', 'Common Lisp', 'Common Workflow Language', 'Coq', 'Cuda', 'Cython', 'D', 'DIGITAL Command Language', 'DM', 'DTrace', 'Dart', 'Dhall', 'Dockerfile', 'Dylan', 'E', 'ECL', 'EJS', 'Eiffel', 'Elixir', 'Elm', 'Emacs Lisp', 'EmberScript', 'Erlang', 'Euphoria', 'F#', 'F*', 'FLUX', 'Fancy', 'Faust', 'Filebench WML', 'Fluent', 'Forth', 'Fortran', 'FreeBasic', 'FreeMarker', 'GAP', 'GCC Machine Description', 'GDB', 'GDScript', 'GLSL', 'GSC', 'Game Maker Language', 'Genshi', 'Gherkin', 'Gnuplot', 'Go', 'Golo', 'Gosu', 'Groff', 'Groovy', 'HCL', 'HLSL', 'HTML', 'Hack', 'Haml', 'Handlebars', 'Haskell', 'Haxe', 'Hy', 'IDL', 'IGOR Pro', 'Inform 7', 'Inno Setup', 'Ioke', 'Isabelle', 'Jasmin', 'Java', 'JavaScript', 'JetBrains MPS', 'Jinja', 'Jolie', 'Jsonnet', 'Julia', 'Jupyter Notebook', 'KRL', 'Kotlin', 'LLVM', 'LSL', 'Lasso', 'Latte', 'Less', 'Lex', 'Limbo', 'Liquid', 'LiveScript', 'Logos', 'Lua', 'M', 'M4', 'MATLAB', 'MAXScript', 'MLIR', 'MQL4', 'MQL5', 'Macaulay2', 'Makefile', 'Mako', 'Mathematica', 'Max', 'Mercury', 'Meson', 'Metal', 'Modelica', 'Modula-2', 'Modula-3', 'Module Management System', 'Monkey', 'Moocode', 'MoonScript', 'Motoko', 'Mustache', 'NASL', 'NSIS', 'NewLisp', 'Nextflow', 'Nginx', 'Nim', 'Nit', 'Nix', 'Nu', 'OCaml', 'Objective-C', 'Objective-C++', 'Objective-J', 'Open Policy Agent', 'OpenEdge ABL', 'PEG.js', 'PHP', 'PLSQL', 'PLpgSQL', 'POV-Ray SDL', 'Pan', 'Papyrus', 'Pascal', 'Pawn', 'Perl', 'Perl 6', 'Pike', 'Pony', 'PostScript', 'PowerShell', 'Processing', 'Procfile', 'Prolog', 'Promela', 'Pug', 'Puppet', 'PureBasic', 'PureScript', 'Python', 'QML', 'QMake', 'R', 'RAML', 'REXX', 'RPC', 'RPGLE', 'RUNOFF', 'Racket', 'Ragel', 'Ragel in Ruby Host', 'Raku', 'ReScript', 'Reason', 'Rebol', 'Red', 'Redcode', 'RenderScript', 'Rich Text Format', 'Riot', 'RobotFramework', 'Roff', 'RouterOS Script', 'Ruby', 'Rust', 'SAS', 'SCSS', 'SMT', 'SQLPL', 'SRecode Template', 'SWIG', 'Sage', 'SaltStack', 'Sass', 'Scala', 'Scheme', 'Scilab', 'Shell', 'ShellSession', 'Sieve', 'Slice', 'Slim', 'SmPL', 'Smali', 'Smalltalk', 'Smarty', 'Solidity', 'SourcePawn', 'Stan', 'Standard ML', 'Starlark', 'Stata', 'StringTemplate', 'Stylus', 'SuperCollider', 'Svelte', 'Swift', 'SystemVerilog', 'TLA', 'TSQL', 'Tcl', 'TeX', 'Tea', 'Terra', 'Thrift', 'Turing', 'Twig', 'TypeScript', 'UnrealScript', 'VBA', 'VBScript', 'VCL', 'VHDL', 'Vala', 'Velocity Template Language', 'Verilog', 'Vim Snippet', 'Vim script', 'Visual Basic', 'Visual Basic .NET', 'Volt', 'Vue', 'WebAssembly', 'Wren', 'X10', 'XProc', 'XQuery', 'XS', 'XSLT', 'Xtend', 'YARA', 'Yacc', 'Yul', 'Zeek', 'Zig', 'eC', 'jq', 'kvlang', 'mupad', 'nesC', 'q', 'sed', 'xBase']
 

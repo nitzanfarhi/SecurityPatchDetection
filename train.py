@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 from importlib.metadata import metadata
 from tensorflow import keras
 from keras.callbacks import EarlyStopping
@@ -10,7 +14,7 @@ from models import *
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import KFold
 from helper import find_best_accuracy, find_best_f1, EnumAction, safe_mkdir
-from classes import Repository
+from helper import Repository
 from matplotlib import pyplot as plt
 from matplotlib import pyplot
 from enum import Enum
@@ -186,7 +190,7 @@ def get_event_window(cur_repo_data,
         res = add_time_one_hot_encoding(res, with_idx=False)
 
     elif aggr_options == Aggregate.before_cve:
-        res = cur_repo_data[event[1] - backs:event[1] + backs]
+        res = cur_repo_data[max(0,event[1] - backs):min(event[1] + backs, cur_repo_data.shape[0])]
 
     elif aggr_options == Aggregate.only_before:
         res = cur_repo_data[event[1] - backs -1 :event[1]-1]
@@ -195,11 +199,11 @@ def get_event_window(cur_repo_data,
         res = cur_repo_data.reset_index().drop(
             ["created_at"],
             axis=1).set_index("idx")[event[1] - backs:event[1] + befs]
-    return res.values
+    return res.drop(['Hash'],axis=1).values, cur_repo_data[event[1] :event[1] +1]['Hash']
 
 
-repo_dirs = 'hiddenCVE/gh_cve_proccessed'
-repo_metadata = 'hiddenCVE/repo_metadata.json'
+repo_dirs = r'C:\Users\nitzan\local\analyzeCVE\data_collection\data\gh_cve_proccessed'
+repo_metadata = r'C:\Users\nitzan\local\analyzeCVE\data_collection\data\repo_metadata.json'
 benign_all, vuln_all = [], []
 n_features = 0
 gap_days = 150
@@ -238,15 +242,14 @@ def create_dataset(aggr_options,
     safe_mkdir(DATASET_DIRNAME + dirname)
 
     counter = 0
-    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[:])):
-
+    for file in (pbar := tqdm.tqdm(os.listdir(repo_dirs)[counter:])):
+        counter += 1
         def tqdm_update(cur):
-            return pbar.set_description(f"{file} - {cur}")
+            return pbar.set_description(f"{counter}-{file} - {cur}")
 
         if ".csv" not in file:
             continue
         file = file.split(".csv")[0]
-        counter += 1
 
         repo_holder = Repository()
         repo_holder.file = file
@@ -351,14 +354,14 @@ def extract_window(aggr_options, hours, days, resample, backs, file,
     """
 
     for cur in cur_list:
-        res = get_event_window(cur_repo,
+        res, hash = get_event_window(cur_repo,
                                cur,
                                aggr_options,
                                days=days,
                                hours=hours,
                                backs=backs,
                                resample=resample)
-        details = (file, cur, tag)
+        details = (file, cur, tag, hash)
         window_lst.append(res)
         details_lst.append(details)
 
@@ -404,7 +407,7 @@ def fix_repo_shape(all_set, cur_repo, metadata=False, update=lambda cur: None):
     cur_repo = cur_repo.drop(["type"], axis=1)
     cur_repo = cur_repo.drop(["name"], axis=1)
     cur_repo = cur_repo.drop(["Unnamed: 0"], axis=1)
-    cur_repo = cur_repo.drop(["Hash"], axis=1)
+    # cur_repo = cur_repo.drop(["Hash"], axis=1)
     return cur_repo
 
 
@@ -457,13 +460,16 @@ def extract_dataset(aggr_options=Aggregate.none,
         try:
             for file in os.listdir(DATASET_DIRNAME + dirname):
                 with open(DATASET_DIRNAME + dirname + "/" + file, 'rb') as f:
-                    repo = pickle.load(f)
-                    all_repos.append(repo)
+                    try:
+                        repo = pickle.load(f)
+                        all_repos.append(repo)
+                    except Exception:
+                        print(f"loading {file} failed")
             column_names = pickle.load(open(DATASET_DIRNAME + dirname + "/column_names.pkl", 'rb'))
         except AttributeError:
             logger.info(f"Malformed dataset - Creating Dataset {dirname}")
             all_repos, column_names = create_dataset(
-                aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)            
+                aggr_options, benign_vuln_ratio, hours, days, resample, backs,metadata=metadata,comment=comment)
     else:
         logger.info(f"Creating Dataset {dirname}")
         all_repos, column_names = create_dataset(aggr_options,
@@ -552,6 +558,8 @@ def train_model(X_train,
 
     es = EarlyStopping(monitor='val_accuracy', mode='max', patience=500)
 
+
+
     verbose = 1 if logger.level < logging.CRITICAL else 0
     validation_data = (X_val, y_val) if len(X_val) else None
     history = model.fit(X_train,
@@ -618,7 +626,7 @@ def check_results(X_test,
     scores = model.evaluate(X_test, used_y_test, verbose=0)
     if len(scores) == 1:
         return 0
-    max_f1, f1_thresh, _ = find_best_f1(X_test, used_y_test, model)
+    max_f1, f1_thresh = find_best_f1(X_test, used_y_test, model)
     max_acc, acc_thresh, _ = find_best_accuracy(X_test, used_y_test, model)
     logger.critical(f"F1 - {max_f1}, {f1_thresh}")
     logger.critical(f"Acc - {max_acc}, {acc_thresh}")
@@ -749,6 +757,8 @@ def split_into_x_and_y(repos,
     details = []
     for repo in repos:
         x, y = repo.get_all_lst()
+        if x.shape[1]!=20 or x.shape[2]!=400:
+            continue
         if with_details:
             details.append(repo.get_all_details())
         X_train.append(x)
@@ -762,8 +772,6 @@ def split_into_x_and_y(repos,
         X_train = X_train[:, :, important_features]
 
     if with_details:
-        if details:
-            details = np.concatenate(details)
         return X_train, y_train, details
 
     return X_train, y_train
@@ -1104,7 +1112,9 @@ def main():
     best_fold_y_train = None
     best_fold_x_val = None
     best_fold_y_val = None
-    remove_unimportant = True
+    best_train_details = None
+    best_validation_details = None
+    remove_unimportant = False
 
     train_repos, val_repos, num_of_train_repos = split_repos(
         train_and_val_repos, train_size)
@@ -1116,10 +1126,10 @@ def main():
     for _ in range(args.kfold):
         train_repos, val_repos, num_of_train_repos = split_repos(
             train_and_val_repos, train_size)
-        X_train, y_train = split_into_x_and_y(
-            train_repos, remove_unimportant_features=remove_unimportant)
-        X_val, y_val = split_into_x_and_y(
-            val_repos, remove_unimportant_features=remove_unimportant)
+        X_train, y_train, train_details = split_into_x_and_y(
+            train_repos, with_details = True, remove_unimportant_features=remove_unimportant)
+        X_val, y_val, validation_details = split_into_x_and_y(
+            val_repos, with_details = True, remove_unimportant_features=remove_unimportant)
 
         model = train_model(X_train,
                             y_train,
@@ -1142,10 +1152,15 @@ def main():
             best_fold_y_train = y_train
             best_fold_x_val = X_val
             best_fold_y_val = y_val
+            best_train_details = train_details
+            best_validation_details = validation_details
 
         num_of_val_repos = len(train_and_val_repos) - num_of_train_repos
         train_and_val_repos = train_and_val_repos[-num_of_val_repos:] + \
             train_and_val_repos[:-num_of_val_repos]
+
+    print(best_train_details)
+    print(best_validation_details)
 
     X_test, y_test, test_details = split_into_x_and_y(
         test_repos,
@@ -1165,6 +1180,18 @@ def main():
 
     if args.fp:
         extract_fp(X_test, y_test, pred, test_details, exp_name)
+
+    
+    train_dets = sum(best_train_details,[])
+    valid_dets = sum(best_validation_details,[])
+    test_dets = sum(test_details,[])
+    with open("test_details.pickle",'wb') as mfile:
+        pickle.dump(test_dets,mfile)
+    with open("validation_details.pickle",'wb') as mfile:
+        pickle.dump(valid_dets,mfile)
+    with open("train_details.pickle",'wb') as mfile:
+        pickle.dump(train_dets,mfile)
+
 
 
 def pad_and_fix(all_repos):
